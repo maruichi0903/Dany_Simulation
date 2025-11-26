@@ -34,6 +34,11 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     public float maxReachDistance = 8.0f;
     public float gridSize = 1.0f;
 
+    [Header("System Settings")]
+    [Tooltip("インベントリUI全体をまとめた親オブジェクト")]
+    public GameObject hudRoot;
+    private bool isInputActive = false;
+
     // 内部データ
     private int[] handheldInventory = { -1, -1, -1, -1, -1 };
     private int currentSlotIndex = 0;
@@ -54,6 +59,8 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             currentGhost.SetActive(false);
         }
 
+        SetActiveState(false);
+
         SetRandomInventory();
         UpdateSelectionUI();
         UpdateStockUI();
@@ -62,37 +69,44 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     void Update()
     {
         if (!localPlayer.isLocal) return;
+        if (!isInputActive) return;
         HandleInput();
         UpdateGhostPosition();
+    }
+    public void SetActiveState(bool isActive)
+    {
+        isInputActive = isActive;
+        if (hudRoot != null) hudRoot.SetActive(isActive);
+        
+        // ゴーストも消しておく
+        if (!isActive && currentGhost != null) currentGhost.SetActive(false);
     }
 
     private void HandleInput()
     {
-        bool moved = false;
+        // 数字キー1~5: スロット選択
+        int newSlotIndex = -1;
 
-        if (Input.GetKeyDown(KeyCode.RightArrow))
+        if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1)) newSlotIndex = 0;
+        else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2)) newSlotIndex = 1;
+        else if (Input.GetKeyDown(KeyCode.Alpha3) || Input.GetKeyDown(KeyCode.Keypad3)) newSlotIndex = 2;
+        else if (Input.GetKeyDown(KeyCode.Alpha4) || Input.GetKeyDown(KeyCode.Keypad4)) newSlotIndex = 3;
+        else if (Input.GetKeyDown(KeyCode.Alpha5) || Input.GetKeyDown(KeyCode.Keypad5)) newSlotIndex = 4;
+
+        if (newSlotIndex != -1)
         {
-            currentSlotIndex = (currentSlotIndex + 1) % 5;
+            currentSlotIndex = newSlotIndex;
             UpdateSelectionUI();
-            moved = true;
-        }
-        if (Input.GetKeyDown(KeyCode.LeftArrow))
-        {
-            currentSlotIndex = (currentSlotIndex - 1 + 5) % 5;
-            UpdateSelectionUI();
-            moved = true;
         }
 
-        if (moved) localPlayer.SetVelocity(Vector3.zero);
-
-        // Eキー: 配置
-        if (Input.GetKeyDown(KeyCode.E))
+        // Eキー左クリック: 配置
+        if (Input.GetKeyDown(KeyCode.E) || Input.GetMouseButtonDown(0))
         {
             TryPlaceCurrentObject();
         }
 
-        // Rキー: 削除
-        if (Input.GetKeyDown(KeyCode.R))
+        // Rキー右クリック: 削除
+        if (Input.GetKeyDown(KeyCode.R) || Input.GetMouseButtonDown(1))
         {
             TryRemoveObject();
         }
