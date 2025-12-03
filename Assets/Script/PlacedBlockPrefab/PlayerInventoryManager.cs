@@ -11,7 +11,8 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     public ObjectPoolManager objectPoolManager;
 
     [Header("Game Settings")]
-    public int totalStock = 100;
+    [Tooltip("回転速度")]
+    public float rotationSpeed = 20.0f;
     public int blockLayer = 0;
     public TextMeshProUGUI stockText;
 
@@ -24,7 +25,7 @@ public class PlayerInventoryManager : UdonSharpBehaviour
 
     [Header("Preview Settings")]
     public GameObject previewGhostPrefab;
-    private GameObject currentGhost; // 実際に表示するゴースト
+    private GameObject currentGhost;
 
     [Header("Colors")]
     public Color frameNormalColor = new Color(0.5f, 0.5f, 0.5f, 0.5f);
@@ -35,13 +36,15 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     public float gridSize = 1.0f;
 
     [Header("System Settings")]
-    [Tooltip("インベントリUI全体をまとめた親オブジェクト")]
     public GameObject hudRoot;
     private bool isInputActive = false;
 
     // 内部データ
     private int[] handheldInventory = { -1, -1, -1, -1, -1 };
     private int currentSlotIndex = 0;
+    private Vector3[] slotRotations = new Vector3[5];
+    private float enableTime = 0f;
+    private float inputCooldown = 1.0f;
     private VRCPlayerApi localPlayer;
 
     void Start()
@@ -52,15 +55,17 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             gameObject.SetActive(false);
             return;
         }
-        // ゴーストの生成
+
         if (previewGhostPrefab != null)
         {
             currentGhost = Instantiate(previewGhostPrefab);
             currentGhost.SetActive(false);
         }
 
-        SetActiveState(false);
+        // 配列の初期化（念のため）
+        slotRotations = new Vector3[5];
 
+        SetActiveState(false);
         SetRandomInventory();
         UpdateSelectionUI();
         UpdateStockUI();
@@ -73,20 +78,24 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         HandleInput();
         UpdateGhostPosition();
     }
+
     public void SetActiveState(bool isActive)
     {
         isInputActive = isActive;
         if (hudRoot != null) hudRoot.SetActive(isActive);
-        
-        // ゴーストも消しておく
+        if (isActive)
+        {
+            enableTime = Time.time;
+        }
         if (!isActive && currentGhost != null) currentGhost.SetActive(false);
     }
 
     private void HandleInput()
     {
-        // 数字キー1~5: スロット選択
-        int newSlotIndex = -1;
+        if (Time.time < enableTime + inputCooldown) return;
 
+        // 数字キー選択
+        int newSlotIndex = -1;
         if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1)) newSlotIndex = 0;
         else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2)) newSlotIndex = 1;
         else if (Input.GetKeyDown(KeyCode.Alpha3) || Input.GetKeyDown(KeyCode.Keypad3)) newSlotIndex = 2;
@@ -99,108 +108,146 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             UpdateSelectionUI();
         }
 
-        // Eキー左クリック: 配置
+        float scroll = Input.GetAxis("Mouse ScrollWheel");
+        if (scroll != 0.0f)
+        {
+            float rotAmount = scroll * rotationSpeed * 10.0f;
+
+            if (Input.GetKey(KeyCode.Q))
+            {
+                // Qキー + ホイール: X軸（縦）回転
+                slotRotations[currentSlotIndex].x += rotAmount;
+            }
+            else if (Input.GetKey(KeyCode.F))
+            {
+                // Fキー + ホイール: Z軸（傾き）回転
+                slotRotations[currentSlotIndex].z += rotAmount;
+            }
+            else
+            {
+                // 何も押していない時は Y軸（横）回転
+                slotRotations[currentSlotIndex].y += rotAmount;
+            }
+        }
+
+        // 配置
         if (Input.GetKeyDown(KeyCode.E) || Input.GetMouseButtonDown(0))
         {
             TryPlaceCurrentObject();
         }
 
-        // Rキー右クリック: 削除
+        // 手元に戻す
         if (Input.GetKeyDown(KeyCode.R) || Input.GetMouseButtonDown(1))
         {
-            TryRemoveObject();
+            TryReturnObjectToHand();
         }
     }
 
     private void UpdateGhostPosition()
     {
         if (currentGhost == null) return;
-
-        // 現在の手持ちが空ならゴーストを消す
         if (handheldInventory[currentSlotIndex] == -1)
         {
             currentGhost.SetActive(false);
             return;
         }
 
-        // 位置計算
         Vector3 targetPos = CalculateGridPosition();
 
-        // 重なりチェック（置ける場所かどうか）
-        Collider[] hitColliders = Physics.OverlapSphere(targetPos, gridSize * 0.45f);
-        bool canPlace = (hitColliders.Length == 0);
-
-        // ゴーストの表示・移動
         currentGhost.SetActive(true);
         currentGhost.transform.position = targetPos;
-        currentGhost.transform.rotation = Quaternion.identity;
-
-        // 置けない場所なら少し色を変えたり消したりする工夫も可能だが
-        // ここではシンプルに「置けない場所でも位置だけは表示」しておく
+        currentGhost.transform.rotation = Quaternion.Euler(slotRotations[currentSlotIndex]);
     }
+
     private void TryPlaceCurrentObject()
     {
         int objID = handheldInventory[currentSlotIndex];
         if (objID == -1) return;
 
         Vector3 spawnPosition = CalculateGridPosition();
-        Collider[] hitColliders = Physics.OverlapSphere(spawnPosition, gridSize * 0.45f);
-        if (hitColliders.Length > 0) return; // 何かあったら置けない
-
-        // オブジェクト生成
         GameObject objToSpawn = objectPoolManager.GetNextBlock(objID);
 
         if (objToSpawn != null)
         {
             Networking.SetOwner(localPlayer, objToSpawn);
+
+            Rigidbody rb = objToSpawn.GetComponent<Rigidbody>();
+            if (rb != null)
+            {
+                rb.isKinematic = true;
+                rb.useGravity = false;
+                rb.velocity = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+            }
+
             objToSpawn.transform.localScale = Vector3.one;
-            objToSpawn.transform.rotation = Quaternion.identity;
+            objToSpawn.transform.rotation = Quaternion.Euler(slotRotations[currentSlotIndex]);
             objToSpawn.transform.position = spawnPosition;
             objToSpawn.SetActive(true);
 
-            // ストック処理
-            // 1. 手持ちを空にする
             handheldInventory[currentSlotIndex] = -1;
-
-            // 2. ストックが残っていれば補充する
-            if (totalStock > 0)
-            {
-                // ストックを減らす
-                totalStock--;
-
-                // 新しいアイテムを補充
-                int typeCount = objectPoolManager.objectPrefabs.Length;
-                handheldInventory[currentSlotIndex] = Random.Range(0, typeCount);
-            }
+            slotRotations[currentSlotIndex] = Vector3.zero;
 
             UpdateSelectionUI();
             UpdateStockUI();
         }
     }
 
-    private void TryRemoveObject()
+    private void TryReturnObjectToHand()
     {
         VRCPlayerApi.TrackingData headData = localPlayer.GetTrackingData(VRCPlayerApi.TrackingDataType.Head);
         Vector3 startPos = headData.position;
         Vector3 dir = headData.rotation * Vector3.forward;
 
         RaycastHit hit;
-
-        // Raycastで当たったオブジェクトを取得
         if (Physics.Raycast(startPos, dir, out hit, maxReachDistance))
         {
             GameObject hitObj = hit.collider.gameObject;
 
-            // ▼▼▼ 修正箇所: Layer番号での比較に置き換え ▼▼▼
-            // UdonではLayer番号での比較が最も確実
             if (hitObj.layer == blockLayer)
             {
-                // 削除（非アクティブ化）するには所有権が必要
-                Networking.SetOwner(localPlayer, hitObj);
-                hitObj.SetActive(false);
+                int emptySlot = -1;
+                for (int i = 0; i < handheldInventory.Length; i++)
+                {
+                    if (handheldInventory[i] == -1)
+                    {
+                        emptySlot = i;
+                        break;
+                    }
+                }
+
+                if (emptySlot != -1)
+                {
+                    int objID = GetObjectIdFromInstance(hitObj);
+                    if (objID != -1)
+                    {
+                        handheldInventory[emptySlot] = objID;
+                        slotRotations[emptySlot] = Vector3.zero;
+                       
+                        Networking.SetOwner(localPlayer, hitObj);
+                        hitObj.SetActive(false);
+                        UpdateSelectionUI();
+                        UpdateStockUI();
+                    }
+                }
             }
-            // ▲▲▲ 修正箇所 ▲▲▲
         }
+    }
+
+    private int GetObjectIdFromInstance(GameObject instance)
+    {
+        if (instance == null || objectPoolManager == null) return -1;
+        string instanceName = instance.name;
+
+        for (int i = 0; i < objectPoolManager.objectPrefabs.Length; i++)
+        {
+            GameObject prefab = objectPoolManager.objectPrefabs[i];
+            if (prefab != null && instanceName.StartsWith(prefab.name))
+            {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private Vector3 CalculateGridPosition()
@@ -211,50 +258,37 @@ public class PlayerInventoryManager : UdonSharpBehaviour
 
         RaycastHit hit;
         int layerMask = ~0;
-        Vector3 targetRawPos;
+        //Vector3 targetRawPos;
 
         if (Physics.Raycast(startPos, dir, out hit, maxReachDistance, layerMask))
         {
-            // 当たった面の隣(手前/上など)を中心とする
-            float safeGridSize = (gridSize > 0.001f) ? gridSize : 1.0f;
-            targetRawPos = hit.point + (hit.normal * (gridSize / 2.0f));
+            //float safeGridSize = (gridSize > 0.001f) ? gridSize : 1.0f;
+            //targetRawPos = hit.point + (hit.normal * (gridSize / 2.0f));
+            return hit.point;
         }
         else
         {
-            // 空中
-            targetRawPos = startPos + (dir * maxReachDistance);
+            //targetRawPos = startPos + (dir * maxReachDistance);
+            return startPos + (dir * maxReachDistance);
         }
 
-        if (gridSize <= 0.001f)
-        {
-            return targetRawPos;
-        }
+        //if (gridSize <= 0.001f) return targetRawPos;
 
-        // スナップ処理
-        float x = Mathf.Round(targetRawPos.x / gridSize) * gridSize;
-        float y = Mathf.Round(targetRawPos.y / gridSize) * gridSize;
-        float z = Mathf.Round(targetRawPos.z / gridSize) * gridSize;
+        //float x = Mathf.Round(targetRawPos.x / gridSize) * gridSize;
+        //float y = Mathf.Round(targetRawPos.y / gridSize) * gridSize;
+        //float z = Mathf.Round(targetRawPos.z / gridSize) * gridSize;
 
-        return new Vector3(x, y, z);
+        //return new Vector3(x, y, z);
     }
 
     public void SetRandomInventory()
     {
         if (objectPoolManager == null) return;
         int typeCount = objectPoolManager.objectPrefabs.Length;
-
         for (int i = 0; i < handheldInventory.Length; i++)
         {
-            // ストックがある限り配る
-            if (totalStock > 0)
-            {
-                handheldInventory[i] = Random.Range(0, typeCount);
-                totalStock--;
-            }
-            else
-            {
-                handheldInventory[i] = -1;
-            }
+            handheldInventory[i] = Random.Range(0, typeCount);
+            slotRotations[i] = Vector3.zero;
         }
     }
 
@@ -281,7 +315,9 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     {
         if (stockText != null)
         {
-            stockText.text = "Stock: " + totalStock.ToString();
+            int currentCount = 0;
+            foreach (int id in handheldInventory) if (id != -1) currentCount++;
+            stockText.text = "Hand: " + currentCount.ToString() + " / 5";
         }
     }
 }
