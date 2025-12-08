@@ -1,5 +1,4 @@
-﻿
-using UdonSharp;
+﻿using UdonSharp;
 using UnityEngine;
 using VRC.SDKBase;
 using VRC.Udon;
@@ -8,32 +7,112 @@ using TMPro;
 public class GameFlowManager : UdonSharpBehaviour
 {
     [Header("UI References")]
-    public TextMeshProUGUI statusText; //ゲーム状態と親の名前を表示するテキスト
-    public TextMeshProUGUI myRoleText; //自分にしか見えない役職を表示するテキスト
-    public GameObject joinButton; //参加ボタン
-    public GameObject startButton; //開始ボタン
+    public TextMeshProUGUI statusText;
+    public TextMeshProUGUI bigRoleText; // 役割表示（最初はこれだけ出す）
+
+    // ▼▼▼ 新規追加: タイマーとお題のUI ▼▼▼
+    public TextMeshProUGUI timerText;   // タイマー表示用
+    public GameObject topicUIRoot;      // お題が表示されているCanvasや親オブジェクト
+    // ▲▲▲ ▲▲▲
+
+    public GameObject joinButton;
+    public GameObject startButton;
 
     [Header("Game Settings")]
-    public int werewolfCount = 1; //人狼の数
+    public int werewolfCount = 1;
+    public float announcementTime = 5.0f; // 役割表示の時間
+    public float buildTimeLimit = 20.0f;  // 建築制限時間（秒）
 
     [Header("Managers")]
     public PlayerInventoryManager inventoryManager;
+    public TopicManager topicManager;
 
-    [Header("Lobby UI")]
+    [Header("UI Roots")]
     public GameObject lobbyCanvasRoot;
+    public GameObject gameUIRoot;
 
-    // 内部データ同期変数
-    [UdonSynced] private int[] playerIds = new int[20]; //参加しているプレイヤーのIDリスト
-    [UdonSynced] private int playerCount = 0; //参加しているプレイヤーの数
-    [UdonSynced] private int[] playerRoles = new int [20]; //各プレイヤーの役職リスト（0:村人, 1:人狼）
-    [UdonSynced] private int currentParentId = -1; //現在の親のプレイヤーID
-    [UdonSynced] private bool isGameStarted = false;
+    // 同期変数
+    [UdonSynced] public int[] playerIds = new int[20];
+    [UdonSynced] public int playerCount = 0;
+    [UdonSynced] public int[] playerRoles = new int[20];
+    [UdonSynced] public int currentParentId = -1;
+    [UdonSynced] public bool isGameStarted = false;
 
     private VRCPlayerApi localPlayer;
+
+    // フェーズ管理フラグ
+    private bool isBuildingPhase = false; // 建築中か？
+    private bool isThinkingPhase = false; // シンキングタイムか？
+
+    // タイマー管理
+    private float currentTimer = 0f;
 
     void Start()
     {
         localPlayer = Networking.LocalPlayer;
+        UpdateUI();
+    }
+
+    void Update()
+    {
+        // Masterのみ実行可能
+        if (localPlayer.isMaster && Input.GetKeyDown(KeyCode.J))
+        {
+            DebugJoinAll();
+        }
+
+        // 建築フェーズ中のみタイマーを動かす
+        if (isGameStarted && isBuildingPhase)
+        {
+            // 時間を減らす
+            currentTimer -= Time.deltaTime;
+
+            // 画面表示更新 ( "Time: 15.4" のように表示 )
+            if (timerText != null)
+            {
+                // 0以下にはしない
+                float displayTime = Mathf.Max(0, currentTimer);
+                timerText.text = $"Time: {displayTime:F1}";
+            }
+
+            // タイマー終了判定 (Masterのみが監視して全員に号令を出す)
+            if (localPlayer.isMaster && currentTimer <= 0)
+            {
+                // 全員をシンキングタイムへ移行させる
+                SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "EnterThinkingPhase");
+            }
+        }
+    }
+
+    public void DebugJoinAll()
+    {
+        Debug.Log("[Debug] Forcing all players to join...");
+
+        // ワールドにいる全プレイヤーを取得
+        VRCPlayerApi[] players = new VRCPlayerApi[20]; // 最大人数分確保
+        VRCPlayerApi.GetPlayers(players);
+
+        foreach (var p in players)
+        {
+            if (Utilities.IsValid(p))
+            {
+                // まだリストにいなければ追加
+                bool joined = false;
+                for (int i = 0; i < playerCount; i++)
+                {
+                    if (playerIds[i] == p.playerId) joined = true;
+                }
+
+                if (!joined)
+                {
+                    playerIds[playerCount] = p.playerId;
+                    playerCount++;
+                    Debug.Log("Added player: " + p.displayName);
+                }
+            }
+        }
+
+        RequestSerialization();
         UpdateUI();
     }
 
@@ -42,133 +121,161 @@ public class GameFlowManager : UdonSharpBehaviour
         UpdateUI();
     }
 
-    // Udonで配列同期を安定させるため、参加処理を少し変更します。
-    // 「Joinボタンを押した人が、自分を配列に加えてSyncする」権限を持ちます。
-    public void JoinGame()
-    {
-        // ▼ デバッグログを追加 ▼
-        Debug.Log("[GameFlowManager] JoinGame called!");
-
-        // localPlayerが取れているかチェック
-        if (localPlayer == null)
-        {
-            Debug.LogError("[GameFlowManager] Error: localPlayer is NULL! (ClientSimは動いていますか？)");
-            return;
-        }
-
-        // ゲーム開始済みかチェック
-        if (isGameStarted)
-        {
-            Debug.Log("[GameFlowManager] Rejected: Game already started.");
-            return;
-        }
-
-        // 既に参加済みかチェック
-        bool joined = false;
-        for (int i = 0; i < playerCount; i++)
-        {
-            if (playerIds[i] == localPlayer.playerId) joined = true;
-        }
-
-        if (joined)
-        {
-            Debug.Log("[GameFlowManager] Rejected: You have already joined.");
-            return;
-        }
-
-        Debug.Log("[GameFlowManager] Success: Joining game...");
-
-        // 自分がオーナーになってデータを更新する
-        Networking.SetOwner(localPlayer, gameObject);
-        playerIds[playerCount] = localPlayer.playerId;
-        playerCount++;
-        RequestSerialization(); // 全員に同期
-        UpdateUI();
-    }
-
-    // --- 2. ゲーム開始 & 役割抽選 ---
+    // --- ゲーム進行シーケンス ---
 
     public void OnClickStart()
     {
-        Debug.Log("[GameFlowManager] Start command received!");
-        // マスターのみ実行可能
         if (!Networking.IsOwner(localPlayer, gameObject)) return;
-        if (playerCount < 1) // 元は < 2 でした
-        {
-            Debug.Log("[GameFlowManager] Not enough players! Count: " + playerCount);
-            return;
-        } // 最低2人必要,一旦1人に変更
+        if (playerCount < 1) return;
 
-        // 1. 役割の初期化 (全員市民:0)
+        // 1. 抽選処理 (省略なしで記述)
         for (int i = 0; i < 20; i++) playerRoles[i] = 0;
-
-        // 2. 人狼の抽選
-        // ランダムに選んだインデックスを人狼(1)にする
-        // 重複しないように選ぶ
-        int assignedWerewolves = 0;
-        while (assignedWerewolves < werewolfCount)
+        int assigned = 0;
+        int safety = 0;
+        while (assigned < werewolfCount && safety < 100)
         {
             int rnd = Random.Range(0, playerCount);
-            if (playerRoles[rnd] == 0) // まだ市民なら
-            {
-                playerRoles[rnd] = 1; // 人狼にする
-                assignedWerewolves++;
-            }
+            if (playerRoles[rnd] == 0) { playerRoles[rnd] = 1; assigned++; }
+            safety++;
         }
-
-        // 3. 最初の親の抽選
         int parentIndex = Random.Range(0, playerCount);
         currentParentId = playerIds[parentIndex];
 
-        // 4. ゲーム開始フラグ
-        isGameStarted = true;
+        // 2. お題抽選
+        if (topicManager != null) topicManager.DrawNewTopics();
 
-        RequestSerialization(); // 全員に結果を送信
+        // 3. ゲーム開始
+        isGameStarted = true;
+        RequestSerialization();
+
+        // 4. シーケンス開始
+        SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "StartGameSequence");
+    }
+
+    public void StartGameSequence()
+    {
+        // フェーズ初期化
+        isBuildingPhase = false;
+        isThinkingPhase = false;
+
+        // ★ここがポイント: 開始直後はお題(topicUIRoot)を隠す！
+        if (topicUIRoot != null) topicUIRoot.SetActive(false);
+        if (timerText != null) timerText.text = "";
+
+        UpdateUI(); // 役割を表示
+
+        // 5秒後に建築フェーズへ
+        SendCustomEventDelayedSeconds(nameof(EnterBuildingPhase), announcementTime);
+    }
+
+    public void EnterBuildingPhase()
+    {
+        // 建築フェーズ開始
+        isBuildingPhase = true;
+
+        // タイマーセット
+        currentTimer = buildTimeLimit;
+
+        // 役割表示を消す
+        if (bigRoleText != null) bigRoleText.text = "";
+
+        // ★ここで初めて「お題」を表示する！
+        if (topicUIRoot != null) topicUIRoot.SetActive(true);
+
+        UpdateInventoryState();
+    }
+
+    // ▼▼▼ 新規追加: シンキングタイムへの移行 ▼▼▼
+    public void EnterThinkingPhase()
+    {
+        // 建築終了
+        isBuildingPhase = false;
+        isThinkingPhase = true;
+
+        // インベントリ強制OFF (親も操作できなくなる)
+        if (inventoryManager != null) inventoryManager.SetActiveState(false);
+
+        // タイマー表示固定
+        if (timerText != null) timerText.text = "Time's Up!";
+
+        // ここで「シンキングタイム！」などの文字を出しても良い
+        if (bigRoleText != null) bigRoleText.text = "<color=yellow>シンキングタイム！</color>";
+    }
+    // ▲▲▲ ▲▲▲
+
+    // --- その他 (JoinGameなどは変更なし) ---
+    public void JoinGame()
+    {
+        if (localPlayer == null || isGameStarted) return;
+        bool joined = false;
+        for (int i = 0; i < playerCount; i++) if (playerIds[i] == localPlayer.playerId) joined = true;
+        if (joined) return;
+        Networking.SetOwner(localPlayer, gameObject);
+        playerIds[playerCount] = localPlayer.playerId;
+        playerCount++;
+        RequestSerialization();
         UpdateUI();
     }
 
-    // --- 3. UI表示更新 ---
-
     public void UpdateUI()
     {
-        // 1. ロビーUI（参加ボタンなど）の表示切り替え
-        // ゲームが始まっていないなら表示、始まっていたら消す
         if (lobbyCanvasRoot != null) lobbyCanvasRoot.SetActive(!isGameStarted);
+        if (gameUIRoot != null) gameUIRoot.SetActive(isGameStarted);
 
-        // 2. テキスト表示の更新
         if (!isGameStarted)
         {
             if (statusText != null) statusText.text = "Waiting... (" + playerCount + " Joined)";
-            if (myRoleText != null) myRoleText.text = "";
-
-            // ★待機中はインベントリを無効化
             if (inventoryManager != null) inventoryManager.SetActiveState(false);
         }
         else
         {
-            // --- ゲーム中の処理 ---
-
             string parentName = "Unknown";
             VRCPlayerApi parentPlayer = VRCPlayerApi.GetPlayerById(currentParentId);
             if (Utilities.IsValid(parentPlayer)) parentName = parentPlayer.displayName;
-
-            if (statusText != null) statusText.text = "Current Parent: " + parentName;
+            if (statusText != null) statusText.text = "Parent is " + parentName;
 
             if (Utilities.IsValid(localPlayer))
             {
-                // ... (役割確認ロジックはそのまま) ...
-
-                // ★自分が親(Parent)である場合のみ、インベントリを表示・操作可能にする
+                // 親かどうか
                 bool amIParent = (localPlayer.playerId == currentParentId);
 
-                if (inventoryManager != null)
+                // お題の正解表示 (TopicManager)
+                if (topicManager != null) topicManager.HighlightAnswerForParent(amIParent);
+
+                // 役割表示 (建築前だけ出す)
+                if (!isBuildingPhase && !isThinkingPhase)
                 {
-                    // 親なら True (表示)、それ以外なら False (非表示)
-                    inventoryManager.SetActiveState(amIParent);
+                    ShowRoleText(amIParent);
                 }
 
-                // ... (役割テキスト表示ロジックはそのまま) ...
+                // インベントリ状態更新 (建築中のみ)
+                UpdateInventoryState();
             }
         }
+    }
+
+    private void ShowRoleText(bool amIParent)
+    {
+        int myRoleID = -1;
+        for (int i = 0; i < playerCount; i++)
+        {
+            if (playerIds[i] == localPlayer.playerId) { myRoleID = playerRoles[i]; break; }
+        }
+
+        if (bigRoleText != null)
+        {
+            string roleStr = (myRoleID == 1) ? "<color=red>あなたは 人狼 です</color>" : "<color=cyan>あなたは 市民 です</color>";
+            if (amIParent) roleStr += "\n<color=yellow>あなたは [親] です！</color>";
+            bigRoleText.text = roleStr;
+        }
+    }
+
+    private void UpdateInventoryState()
+    {
+        if (inventoryManager == null) return;
+        bool amIParent = (localPlayer.playerId == currentParentId);
+
+        // 建築フェーズ かつ 親 のときだけON
+        inventoryManager.SetActiveState(isGameStarted && isBuildingPhase && amIParent);
     }
 }

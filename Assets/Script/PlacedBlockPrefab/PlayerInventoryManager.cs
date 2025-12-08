@@ -3,6 +3,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using VRC.SDKBase;
 using VRC.Udon;
+using VRC.SDK3.Components;
 using TMPro;
 
 public class PlayerInventoryManager : UdonSharpBehaviour
@@ -11,8 +12,9 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     public ObjectPoolManager objectPoolManager;
 
     [Header("Game Settings")]
-    [Tooltip("回転速度")]
-    public float rotationSpeed = 20.0f;
+    [Tooltip("1回のスクロールで回転させる角度 (例: 30度, 45度, 90度)")]
+    public float rotationSnapAngle = 30.0f; // ▼▼▼ 変更: 固定角度の設定 ▼▼▼
+
     public int blockLayer = 0;
     public TextMeshProUGUI stockText;
 
@@ -24,7 +26,9 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     public Image[] iconImages;
 
     [Header("Preview Settings")]
-    public GameObject previewGhostPrefab;
+    [Tooltip("ゴースト表示に使う半透明マテリアル")]
+    public Material ghostMaterial;
+
     private GameObject currentGhost;
 
     [Header("Colors")]
@@ -43,8 +47,10 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     private int[] handheldInventory = { -1, -1, -1, -1, -1 };
     private int currentSlotIndex = 0;
     private Vector3[] slotRotations = new Vector3[5];
+
     private float enableTime = 0f;
     private float inputCooldown = 1.0f;
+
     private VRCPlayerApi localPlayer;
 
     void Start()
@@ -56,17 +62,13 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             return;
         }
 
-        if (previewGhostPrefab != null)
-        {
-            currentGhost = Instantiate(previewGhostPrefab);
-            currentGhost.SetActive(false);
-        }
-
-        // 配列の初期化（念のため）
         slotRotations = new Vector3[5];
 
         SetActiveState(false);
         SetRandomInventory();
+
+        UpdateGhostModel();
+
         UpdateSelectionUI();
         UpdateStockUI();
     }
@@ -83,10 +85,13 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     {
         isInputActive = isActive;
         if (hudRoot != null) hudRoot.SetActive(isActive);
+
         if (isActive)
         {
             enableTime = Time.time;
+            UpdateGhostModel();
         }
+
         if (!isActive && currentGhost != null) currentGhost.SetActive(false);
     }
 
@@ -105,30 +110,40 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         if (newSlotIndex != -1)
         {
             currentSlotIndex = newSlotIndex;
+            UpdateGhostModel();
             UpdateSelectionUI();
         }
 
+        // ▼▼▼ 修正: スナップ回転処理 (固定角度で回す) ▼▼▼
         float scroll = Input.GetAxis("Mouse ScrollWheel");
         if (scroll != 0.0f)
         {
-            float rotAmount = scroll * rotationSpeed * 10.0f;
+            // スクロールの方向を判定 (正なら1, 負なら-1)
+            float direction = Mathf.Sign(scroll);
+
+            // 固定角度を適用
+            float rotAmount = direction * rotationSnapAngle;
 
             if (Input.GetKey(KeyCode.Q))
             {
-                // Qキー + ホイール: X軸（縦）回転
                 slotRotations[currentSlotIndex].x += rotAmount;
             }
             else if (Input.GetKey(KeyCode.F))
             {
-                // Fキー + ホイール: Z軸（傾き）回転
                 slotRotations[currentSlotIndex].z += rotAmount;
             }
             else
             {
-                // 何も押していない時は Y軸（横）回転
                 slotRotations[currentSlotIndex].y += rotAmount;
             }
+
+            // 角度をきれいに丸める処理（誤差蓄積防止）
+            // 例: 29.999度になってしまっても、30度に補正する
+            slotRotations[currentSlotIndex].x = Mathf.Round(slotRotations[currentSlotIndex].x / rotationSnapAngle) * rotationSnapAngle;
+            slotRotations[currentSlotIndex].y = Mathf.Round(slotRotations[currentSlotIndex].y / rotationSnapAngle) * rotationSnapAngle;
+            slotRotations[currentSlotIndex].z = Mathf.Round(slotRotations[currentSlotIndex].z / rotationSnapAngle) * rotationSnapAngle;
         }
+        // ▲▲▲ ▲▲▲
 
         // 配置
         if (Input.GetKeyDown(KeyCode.E) || Input.GetMouseButtonDown(0))
@@ -143,6 +158,42 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         }
     }
 
+    private void UpdateGhostModel()
+    {
+        if (currentGhost != null)
+        {
+            Destroy(currentGhost);
+        }
+
+        int objID = handheldInventory[currentSlotIndex];
+        if (objID == -1 || objectPoolManager == null) return;
+
+        GameObject prefab = objectPoolManager.objectPrefabs[objID];
+        if (prefab == null) return;
+
+        currentGhost = Instantiate(prefab);
+
+        Destroy(currentGhost.GetComponent<Collider>());
+        Destroy(currentGhost.GetComponent<Rigidbody>());
+        Destroy(currentGhost.GetComponent<VRCObjectSync>());
+        Destroy(currentGhost.GetComponent<UdonBehaviour>());
+
+        Collider[] childCols = currentGhost.GetComponentsInChildren<Collider>();
+        foreach (Collider c in childCols) Destroy(c);
+
+        if (ghostMaterial != null)
+        {
+            MeshRenderer mr = currentGhost.GetComponent<MeshRenderer>();
+            if (mr != null) mr.sharedMaterial = ghostMaterial;
+
+            MeshRenderer[] childRenderers = currentGhost.GetComponentsInChildren<MeshRenderer>();
+            foreach (MeshRenderer r in childRenderers) r.sharedMaterial = ghostMaterial;
+        }
+
+        currentGhost.layer = 2; // Ignore Raycast
+        currentGhost.SetActive(isInputActive);
+    }
+
     private void UpdateGhostPosition()
     {
         if (currentGhost == null) return;
@@ -152,7 +203,7 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             return;
         }
 
-        Vector3 targetPos = CalculateGridPosition();
+        Vector3 targetPos = CalculateFreePosition();
 
         currentGhost.SetActive(true);
         currentGhost.transform.position = targetPos;
@@ -164,7 +215,8 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         int objID = handheldInventory[currentSlotIndex];
         if (objID == -1) return;
 
-        Vector3 spawnPosition = CalculateGridPosition();
+        Vector3 spawnPosition = CalculateFreePosition();
+
         GameObject objToSpawn = objectPoolManager.GetNextBlock(objID);
 
         if (objToSpawn != null)
@@ -180,7 +232,6 @@ public class PlayerInventoryManager : UdonSharpBehaviour
                 rb.angularVelocity = Vector3.zero;
             }
 
-            objToSpawn.transform.localScale = Vector3.one;
             objToSpawn.transform.rotation = Quaternion.Euler(slotRotations[currentSlotIndex]);
             objToSpawn.transform.position = spawnPosition;
             objToSpawn.SetActive(true);
@@ -190,6 +241,7 @@ public class PlayerInventoryManager : UdonSharpBehaviour
 
             UpdateSelectionUI();
             UpdateStockUI();
+            UpdateGhostModel();
         }
     }
 
@@ -223,11 +275,12 @@ public class PlayerInventoryManager : UdonSharpBehaviour
                     {
                         handheldInventory[emptySlot] = objID;
                         slotRotations[emptySlot] = Vector3.zero;
-                       
+
                         Networking.SetOwner(localPlayer, hitObj);
                         hitObj.SetActive(false);
                         UpdateSelectionUI();
                         UpdateStockUI();
+                        UpdateGhostModel();
                     }
                 }
             }
@@ -250,35 +303,23 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         return -1;
     }
 
-    private Vector3 CalculateGridPosition()
+    private Vector3 CalculateFreePosition()
     {
         VRCPlayerApi.TrackingData headData = localPlayer.GetTrackingData(VRCPlayerApi.TrackingDataType.Head);
         Vector3 startPos = headData.position;
         Vector3 dir = headData.rotation * Vector3.forward;
 
         RaycastHit hit;
-        int layerMask = ~0;
-        //Vector3 targetRawPos;
+        int layerMask = ~(1 << blockLayer);
 
         if (Physics.Raycast(startPos, dir, out hit, maxReachDistance, layerMask))
         {
-            //float safeGridSize = (gridSize > 0.001f) ? gridSize : 1.0f;
-            //targetRawPos = hit.point + (hit.normal * (gridSize / 2.0f));
             return hit.point;
         }
         else
         {
-            //targetRawPos = startPos + (dir * maxReachDistance);
             return startPos + (dir * maxReachDistance);
         }
-
-        //if (gridSize <= 0.001f) return targetRawPos;
-
-        //float x = Mathf.Round(targetRawPos.x / gridSize) * gridSize;
-        //float y = Mathf.Round(targetRawPos.y / gridSize) * gridSize;
-        //float z = Mathf.Round(targetRawPos.z / gridSize) * gridSize;
-
-        //return new Vector3(x, y, z);
     }
 
     public void SetRandomInventory()
