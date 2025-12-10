@@ -8,20 +8,18 @@ public class GameFlowManager : UdonSharpBehaviour
 {
     [Header("UI References")]
     public TextMeshProUGUI statusText;
-    public TextMeshProUGUI bigRoleText; // 役割表示（最初はこれだけ出す）
-
-    // ▼▼▼ 新規追加: タイマーとお題のUI ▼▼▼
-    public TextMeshProUGUI timerText;   // タイマー表示用
-    public GameObject topicUIRoot;      // お題が表示されているCanvasや親オブジェクト
-    // ▲▲▲ ▲▲▲
+    public TextMeshProUGUI bigRoleText;
+    public TextMeshProUGUI timerText;
+    public GameObject topicUIRoot;
+    public GameObject votingUIRoot;
 
     public GameObject joinButton;
     public GameObject startButton;
 
     [Header("Game Settings")]
     public int werewolfCount = 1;
-    public float announcementTime = 5.0f; // 役割表示の時間
-    public float buildTimeLimit = 20.0f;  // 建築制限時間（秒）
+    public float announcementTime = 5.0f;
+    public float buildTimeLimit = 20.0f;
 
     [Header("Managers")]
     public PlayerInventoryManager inventoryManager;
@@ -38,47 +36,48 @@ public class GameFlowManager : UdonSharpBehaviour
     [UdonSynced] public int currentParentId = -1;
     [UdonSynced] public bool isGameStarted = false;
 
+    // ▼▼▼ これが不足していた変数です！ ▼▼▼
+    [UdonSynced] public int currentGuesserId = -1;
+    // ▲▲▲ ▲▲▲
+
+    [Header("Score Data")]
+    [UdonSynced] public int citizenWins = 0;
+    [UdonSynced] public int werewolfWins = 0;
+
     private VRCPlayerApi localPlayer;
 
-    // フェーズ管理フラグ
-    private bool isBuildingPhase = false; // 建築中か？
-    private bool isThinkingPhase = false; // シンキングタイムか？
+    [HideInInspector] public bool isBuildingPhase = false;
+    [HideInInspector] public bool isThinkingPhase = false;
 
-    // タイマー管理
+    private bool isProcessingResult = false;
     private float currentTimer = 0f;
 
     void Start()
     {
         localPlayer = Networking.LocalPlayer;
+        if (votingUIRoot != null) votingUIRoot.SetActive(false);
         UpdateUI();
     }
 
     void Update()
     {
-        // Masterのみ実行可能
         if (localPlayer.isMaster && Input.GetKeyDown(KeyCode.J))
         {
             DebugJoinAll();
         }
 
-        // 建築フェーズ中のみタイマーを動かす
         if (isGameStarted && isBuildingPhase)
         {
-            // 時間を減らす
             currentTimer -= Time.deltaTime;
 
-            // 画面表示更新 ( "Time: 15.4" のように表示 )
             if (timerText != null)
             {
-                // 0以下にはしない
                 float displayTime = Mathf.Max(0, currentTimer);
                 timerText.text = $"Time: {displayTime:F1}";
             }
 
-            // タイマー終了判定 (Masterのみが監視して全員に号令を出す)
             if (localPlayer.isMaster && currentTimer <= 0)
             {
-                // 全員をシンキングタイムへ移行させる
                 SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "EnterThinkingPhase");
             }
         }
@@ -87,16 +86,13 @@ public class GameFlowManager : UdonSharpBehaviour
     public void DebugJoinAll()
     {
         Debug.Log("[Debug] Forcing all players to join...");
-
-        // ワールドにいる全プレイヤーを取得
-        VRCPlayerApi[] players = new VRCPlayerApi[20]; // 最大人数分確保
+        VRCPlayerApi[] players = new VRCPlayerApi[20];
         VRCPlayerApi.GetPlayers(players);
 
         foreach (var p in players)
         {
             if (Utilities.IsValid(p))
             {
-                // まだリストにいなければ追加
                 bool joined = false;
                 for (int i = 0; i < playerCount; i++)
                 {
@@ -107,11 +103,9 @@ public class GameFlowManager : UdonSharpBehaviour
                 {
                     playerIds[playerCount] = p.playerId;
                     playerCount++;
-                    Debug.Log("Added player: " + p.displayName);
                 }
             }
         }
-
         RequestSerialization();
         UpdateUI();
     }
@@ -121,14 +115,12 @@ public class GameFlowManager : UdonSharpBehaviour
         UpdateUI();
     }
 
-    // --- ゲーム進行シーケンス ---
-
     public void OnClickStart()
     {
         if (!Networking.IsOwner(localPlayer, gameObject)) return;
         if (playerCount < 1) return;
 
-        // 1. 抽選処理 (省略なしで記述)
+        // 1. 役割抽選
         for (int i = 0; i < 20; i++) playerRoles[i] = 0;
         int assigned = 0;
         int safety = 0;
@@ -138,72 +130,99 @@ public class GameFlowManager : UdonSharpBehaviour
             if (playerRoles[rnd] == 0) { playerRoles[rnd] = 1; assigned++; }
             safety++;
         }
+
+        // 2. 最初の親を決める
         int parentIndex = Random.Range(0, playerCount);
         currentParentId = playerIds[parentIndex];
 
-        // 2. お題抽選
+        // 3. 最初の回答者を決める（親以外から選ぶ）
+        PickNewGuesser();
+
         if (topicManager != null) topicManager.DrawNewTopics();
 
-        // 3. ゲーム開始
         isGameStarted = true;
         RequestSerialization();
 
-        // 4. シーケンス開始
         SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "StartGameSequence");
+    }
+
+    // 回答者を抽選する関数
+    public void PickNewGuesser()
+    {
+        if (playerCount <= 1)
+        {
+            currentGuesserId = currentParentId;
+            return;
+        }
+
+        int guesserIndex = -1;
+        int safety = 0;
+
+        while (safety < 100)
+        {
+            int rnd = Random.Range(0, playerCount);
+            if (playerIds[rnd] != currentParentId)
+            {
+                guesserIndex = rnd;
+                break;
+            }
+            safety++;
+        }
+
+        if (guesserIndex != -1)
+        {
+            currentGuesserId = playerIds[guesserIndex];
+        }
     }
 
     public void StartGameSequence()
     {
-        // フェーズ初期化
         isBuildingPhase = false;
         isThinkingPhase = false;
+        isProcessingResult = false;
 
-        // ★ここがポイント: 開始直後はお題(topicUIRoot)を隠す！
         if (topicUIRoot != null) topicUIRoot.SetActive(false);
+        if (votingUIRoot != null) votingUIRoot.SetActive(false);
         if (timerText != null) timerText.text = "";
 
-        UpdateUI(); // 役割を表示
-
-        // 5秒後に建築フェーズへ
+        UpdateUI();
         SendCustomEventDelayedSeconds(nameof(EnterBuildingPhase), announcementTime);
     }
 
     public void EnterBuildingPhase()
     {
-        // 建築フェーズ開始
         isBuildingPhase = true;
-
-        // タイマーセット
         currentTimer = buildTimeLimit;
 
-        // 役割表示を消す
         if (bigRoleText != null) bigRoleText.text = "";
-
-        // ★ここで初めて「お題」を表示する！
         if (topicUIRoot != null) topicUIRoot.SetActive(true);
 
         UpdateInventoryState();
     }
 
-    // ▼▼▼ 新規追加: シンキングタイムへの移行 ▼▼▼
     public void EnterThinkingPhase()
     {
-        // 建築終了
         isBuildingPhase = false;
         isThinkingPhase = true;
 
-        // インベントリ強制OFF (親も操作できなくなる)
         if (inventoryManager != null) inventoryManager.SetActiveState(false);
-
-        // タイマー表示固定
         if (timerText != null) timerText.text = "Time's Up!";
 
-        // ここで「シンキングタイム！」などの文字を出しても良い
-        if (bigRoleText != null) bigRoleText.text = "<color=yellow>シンキングタイム！</color>";
-    }
-    // ▲▲▲ ▲▲▲
+        if (bigRoleText != null)
+        {
+            if (localPlayer.playerId == currentGuesserId)
+            {
+                bigRoleText.text = "<color=green>回答してください！</color>";
+            }
+            else
+            {
+                bigRoleText.text = "<color=yellow>シンキングタイム！</color>";
+            }
+        }
 
-    // --- その他 (JoinGameなどは変更なし) ---
+        if (votingUIRoot != null) votingUIRoot.SetActive(true);
+    }
+
     public void JoinGame()
     {
         if (localPlayer == null || isGameStarted) return;
@@ -232,23 +251,23 @@ public class GameFlowManager : UdonSharpBehaviour
             string parentName = "Unknown";
             VRCPlayerApi parentPlayer = VRCPlayerApi.GetPlayerById(currentParentId);
             if (Utilities.IsValid(parentPlayer)) parentName = parentPlayer.displayName;
-            if (statusText != null) statusText.text = "Parent is " + parentName;
+
+            string guesserName = "Unknown";
+            VRCPlayerApi guesserPlayer = VRCPlayerApi.GetPlayerById(currentGuesserId);
+            if (Utilities.IsValid(guesserPlayer)) guesserName = guesserPlayer.displayName;
+
+            if (statusText != null)
+                statusText.text = $"Parent: {parentName}\nGuesser: {guesserName}";
 
             if (Utilities.IsValid(localPlayer))
             {
-                // 親かどうか
                 bool amIParent = (localPlayer.playerId == currentParentId);
-
-                // お題の正解表示 (TopicManager)
                 if (topicManager != null) topicManager.HighlightAnswerForParent(amIParent);
 
-                // 役割表示 (建築前だけ出す)
                 if (!isBuildingPhase && !isThinkingPhase)
                 {
                     ShowRoleText(amIParent);
                 }
-
-                // インベントリ状態更新 (建築中のみ)
                 UpdateInventoryState();
             }
         }
@@ -264,8 +283,26 @@ public class GameFlowManager : UdonSharpBehaviour
 
         if (bigRoleText != null)
         {
-            string roleStr = (myRoleID == 1) ? "<color=red>あなたは 人狼 です</color>" : "<color=cyan>あなたは 市民 です</color>";
-            if (amIParent) roleStr += "\n<color=yellow>あなたは [親] です！</color>";
+            string roleStr = "";
+            if (myRoleID == 1)
+            {
+                roleStr = "<color=#FF0000>あなたは <size=150%>人狼</size> です</color>";
+            }
+            else
+            {
+                roleStr = "<color=#00FFFF>あなたは <size=150%>市民</size> です</color>";
+            }
+
+            if (amIParent)
+            {
+                roleStr += "\n<color=#FFFF00>あなたは [親] です！</color>";
+            }
+
+            if (localPlayer.playerId == currentGuesserId)
+            {
+                roleStr += "\n<color=#00FF00>次は [回答者] です！</color>";
+            }
+
             bigRoleText.text = roleStr;
         }
     }
@@ -274,8 +311,64 @@ public class GameFlowManager : UdonSharpBehaviour
     {
         if (inventoryManager == null) return;
         bool amIParent = (localPlayer.playerId == currentParentId);
-
-        // 建築フェーズ かつ 親 のときだけON
         inventoryManager.SetActiveState(isGameStarted && isBuildingPhase && amIParent);
+    }
+
+    public void OnAnswerResult(bool isCorrect)
+    {
+        if (isProcessingResult) return;
+        isProcessingResult = true;
+
+        if (isCorrect)
+        {
+            SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "ProcessCorrectAnswer");
+        }
+        else
+        {
+            SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "ProcessWrongAnswer");
+        }
+    }
+
+    public void ProcessCorrectAnswer()
+    {
+        isProcessingResult = true;
+        if (bigRoleText != null) bigRoleText.text = "<color=#00FFFF>正解！！</color>";
+
+        if (Networking.IsOwner(gameObject))
+        {
+            citizenWins++;
+            RequestSerialization();
+            SendCustomEventDelayedSeconds(nameof(StartNextTurn), 3.0f);
+        }
+    }
+
+    public void ProcessWrongAnswer()
+    {
+        isProcessingResult = true;
+        if (bigRoleText != null) bigRoleText.text = "<color=#FF0000>不正解...</color>";
+
+        if (Networking.IsOwner(gameObject))
+        {
+            werewolfWins++;
+            RequestSerialization();
+            SendCustomEventDelayedSeconds(nameof(StartNextTurn), 3.0f);
+        }
+    }
+
+    public void StartNextTurn()
+    {
+        if (inventoryManager != null)
+        {
+            inventoryManager.SendCustomEvent("ClearAllBlocks");
+        }
+
+        if (topicManager != null) topicManager.DrawNewTopics();
+
+        currentParentId = currentGuesserId;
+
+        PickNewGuesser();
+
+        RequestSerialization();
+        SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "StartGameSequence");
     }
 }

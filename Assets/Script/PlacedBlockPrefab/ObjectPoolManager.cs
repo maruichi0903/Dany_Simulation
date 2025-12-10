@@ -12,7 +12,7 @@ public class ObjectPoolManager : UdonSharpBehaviour
     public int poolSizePerType = 10;
 
     // プール配列 ( [種類ID][個数インデックス] )
-    private GameObject[][] objectPools;
+    public GameObject[][] objectPools;
     private int[] currentPoolIndex;
 
     void Start()

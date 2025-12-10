@@ -361,4 +361,21 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             stockText.text = "Hand: " + currentCount.ToString() + " / 5";
         }
     }
+
+    public void ClearAllBlocks()
+    {
+        if (objectPoolManager == null || objectPoolManager.objectPools == null) return;
+
+        for (int i = 0; i < objectPoolManager.objectPools.Length; i++)
+        {
+            if (objectPoolManager.objectPools[i] == null) continue;
+            for (int j = 0; j < objectPoolManager.objectPools[i].Length; j++)
+            {
+                if (objectPoolManager.objectPools[i][j] != null)
+                {
+                    objectPoolManager.objectPools[i][j].SetActive(false);
+                }
+            }
+        }
+    }
 }

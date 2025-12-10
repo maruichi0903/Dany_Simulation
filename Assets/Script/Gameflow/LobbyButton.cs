@@ -3,8 +3,7 @@ using UnityEngine;
 using VRC.SDKBase;
 using VRC.Udon;
 
-// ▼ ここの名前が "SimpleButton" になっていないとエラーになります ▼
-public class SimpleButton : UdonSharpBehaviour
+public class LobbyButton : UdonSharpBehaviour
 {
     public UdonBehaviour targetProgram;
     public string eventName;
