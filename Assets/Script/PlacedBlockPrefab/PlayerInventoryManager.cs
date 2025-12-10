@@ -12,9 +12,8 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     public ObjectPoolManager objectPoolManager;
 
     [Header("Game Settings")]
-    [Tooltip("1回のスクロールで回転させる角度 (例: 30度, 45度, 90度)")]
-    public float rotationSnapAngle = 30.0f; // ▼▼▼ 変更: 固定角度の設定 ▼▼▼
-
+    public float rotationSnapAngle = 30.0f;
+    public float scaleStep = 0.1f;
     public int blockLayer = 0;
     public TextMeshProUGUI stockText;
 
@@ -26,9 +25,7 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     public Image[] iconImages;
 
     [Header("Preview Settings")]
-    [Tooltip("ゴースト表示に使う半透明マテリアル")]
     public Material ghostMaterial;
-
     private GameObject currentGhost;
 
     [Header("Colors")]
@@ -43,11 +40,14 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     public GameObject hudRoot;
     private bool isInputActive = false;
 
-    // 内部データ
-    private int[] handheldInventory = { -1, -1, -1, -1, -1 };
-    private int currentSlotIndex = 0;
-    private Vector3[] slotRotations = new Vector3[5];
+    private int[] handheldInventory = new int[5];
+    private int[] reserveInventory = new int[5];
+    private int reserveCount = 0;
 
+    private Vector3[] slotRotations = new Vector3[5];
+    private float[] slotScales = new float[5];
+
+    private int currentSlotIndex = 0;
     private float enableTime = 0f;
     private float inputCooldown = 1.0f;
 
@@ -62,13 +62,20 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             return;
         }
 
+        handheldInventory = new int[5];
+        reserveInventory = new int[5];
         slotRotations = new Vector3[5];
+        slotScales = new float[5];
+
+        for (int i = 0; i < 5; i++)
+        {
+            handheldInventory[i] = -1;
+            slotRotations[i] = Vector3.zero;
+            slotScales[i] = 1.0f;
+            reserveInventory[i] = -1;
+        }
 
         SetActiveState(false);
-        SetRandomInventory();
-
-        UpdateGhostModel();
-
         UpdateSelectionUI();
         UpdateStockUI();
     }
@@ -81,17 +88,48 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         UpdateGhostPosition();
     }
 
+    public void RefillInventory()
+    {
+        if (objectPoolManager == null) return;
+        int typeCount = objectPoolManager.objectPrefabs.Length;
+
+        for (int i = 0; i < 5; i++)
+        {
+            handheldInventory[i] = Random.Range(0, typeCount);
+            slotRotations[i] = Vector3.zero;
+            slotScales[i] = 1.0f;
+        }
+        for (int i = 0; i < 5; i++)
+        {
+            reserveInventory[i] = Random.Range(0, typeCount);
+        }
+        reserveCount = 5;
+
+        currentSlotIndex = 0;
+        UpdateGhostModel();
+        UpdateSelectionUI();
+        UpdateStockUI();
+    }
+
+    private void TryRefillSlot(int slotIndex)
+    {
+        if (reserveCount > 0)
+        {
+            int nextItem = reserveInventory[reserveCount - 1];
+            reserveInventory[reserveCount - 1] = -1;
+            reserveCount--;
+
+            handheldInventory[slotIndex] = nextItem;
+            slotRotations[slotIndex] = Vector3.zero;
+            slotScales[slotIndex] = 1.0f;
+        }
+    }
+
     public void SetActiveState(bool isActive)
     {
         isInputActive = isActive;
         if (hudRoot != null) hudRoot.SetActive(isActive);
-
-        if (isActive)
-        {
-            enableTime = Time.time;
-            UpdateGhostModel();
-        }
-
+        if (isActive) { enableTime = Time.time; UpdateGhostModel(); }
         if (!isActive && currentGhost != null) currentGhost.SetActive(false);
     }
 
@@ -99,13 +137,12 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     {
         if (Time.time < enableTime + inputCooldown) return;
 
-        // 数字キー選択
         int newSlotIndex = -1;
-        if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1)) newSlotIndex = 0;
-        else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2)) newSlotIndex = 1;
-        else if (Input.GetKeyDown(KeyCode.Alpha3) || Input.GetKeyDown(KeyCode.Keypad3)) newSlotIndex = 2;
-        else if (Input.GetKeyDown(KeyCode.Alpha4) || Input.GetKeyDown(KeyCode.Keypad4)) newSlotIndex = 3;
-        else if (Input.GetKeyDown(KeyCode.Alpha5) || Input.GetKeyDown(KeyCode.Keypad5)) newSlotIndex = 4;
+        if (Input.GetKeyDown(KeyCode.Alpha1)) newSlotIndex = 0;
+        else if (Input.GetKeyDown(KeyCode.Alpha2)) newSlotIndex = 1;
+        else if (Input.GetKeyDown(KeyCode.Alpha3)) newSlotIndex = 2;
+        else if (Input.GetKeyDown(KeyCode.Alpha4)) newSlotIndex = 3;
+        else if (Input.GetKeyDown(KeyCode.Alpha5)) newSlotIndex = 4;
 
         if (newSlotIndex != -1)
         {
@@ -114,56 +151,60 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             UpdateSelectionUI();
         }
 
-        // ▼▼▼ 修正: スナップ回転処理 (固定角度で回す) ▼▼▼
         float scroll = Input.GetAxis("Mouse ScrollWheel");
         if (scroll != 0.0f)
         {
-            // スクロールの方向を判定 (正なら1, 負なら-1)
             float direction = Mathf.Sign(scroll);
-
-            // 固定角度を適用
-            float rotAmount = direction * rotationSnapAngle;
-
             if (Input.GetKey(KeyCode.Q))
             {
-                slotRotations[currentSlotIndex].x += rotAmount;
+                float newScale = slotScales[currentSlotIndex] + (direction * scaleStep);
+                slotScales[currentSlotIndex] = Mathf.Clamp(newScale, 0.2f, 3.0f);
             }
             else if (Input.GetKey(KeyCode.F))
             {
-                slotRotations[currentSlotIndex].z += rotAmount;
+                float rotAmount = direction * rotationSnapAngle;
+                slotRotations[currentSlotIndex].y += rotAmount;
+                slotRotations[currentSlotIndex].y = Mathf.Round(slotRotations[currentSlotIndex].y / rotationSnapAngle) * rotationSnapAngle;
             }
             else
             {
-                slotRotations[currentSlotIndex].y += rotAmount;
+                float rotAmount = direction * rotationSnapAngle;
+                slotRotations[currentSlotIndex].z += rotAmount;
+                slotRotations[currentSlotIndex].z = Mathf.Round(slotRotations[currentSlotIndex].z / rotationSnapAngle) * rotationSnapAngle;
             }
 
-            // 角度をきれいに丸める処理（誤差蓄積防止）
-            // 例: 29.999度になってしまっても、30度に補正する
-            slotRotations[currentSlotIndex].x = Mathf.Round(slotRotations[currentSlotIndex].x / rotationSnapAngle) * rotationSnapAngle;
-            slotRotations[currentSlotIndex].y = Mathf.Round(slotRotations[currentSlotIndex].y / rotationSnapAngle) * rotationSnapAngle;
-            slotRotations[currentSlotIndex].z = Mathf.Round(slotRotations[currentSlotIndex].z / rotationSnapAngle) * rotationSnapAngle;
-        }
-        // ▲▲▲ ▲▲▲
-
-        // 配置
-        if (Input.GetKeyDown(KeyCode.E) || Input.GetMouseButtonDown(0))
-        {
-            TryPlaceCurrentObject();
+            // 入力時に即座にサイズ反映
+            UpdateGhostScale();
         }
 
-        // 手元に戻す
-        if (Input.GetKeyDown(KeyCode.R) || Input.GetMouseButtonDown(1))
-        {
-            TryReturnObjectToHand();
-        }
+        if (Input.GetKeyDown(KeyCode.E) || Input.GetMouseButtonDown(0)) TryPlaceCurrentObject();
+        if (Input.GetKeyDown(KeyCode.R) || Input.GetMouseButtonDown(1)) TryReturnObjectToHand();
     }
+
+    // ▼▼▼ 追加: スケール計算用の便利関数 ▼▼▼
+    private void UpdateGhostScale()
+    {
+        if (currentGhost == null) return;
+        int objID = handheldInventory[currentSlotIndex];
+        if (objID == -1 || objectPoolManager == null) return;
+
+        // Prefabの「元の大きさ」を取得
+        GameObject prefab = objectPoolManager.objectPrefabs[objID];
+        Vector3 baseScale = prefab.transform.localScale;
+
+        // 倍率計算 (0以下防止)
+        float s = slotScales[currentSlotIndex];
+        if (s <= 0.01f) s = 1.0f;
+
+        // 元の大きさ × 倍率
+        currentGhost.transform.localScale = baseScale * s;
+    }
+    // ▲▲▲ ▲▲▲
 
     private void UpdateGhostModel()
     {
-        if (currentGhost != null)
-        {
-            Destroy(currentGhost);
-        }
+        if (currentGhost != null) Destroy(currentGhost);
+        if (currentSlotIndex < 0 || currentSlotIndex >= handheldInventory.Length) return;
 
         int objID = handheldInventory[currentSlotIndex];
         if (objID == -1 || objectPoolManager == null) return;
@@ -177,21 +218,20 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         Destroy(currentGhost.GetComponent<Rigidbody>());
         Destroy(currentGhost.GetComponent<VRCObjectSync>());
         Destroy(currentGhost.GetComponent<UdonBehaviour>());
-
-        Collider[] childCols = currentGhost.GetComponentsInChildren<Collider>();
-        foreach (Collider c in childCols) Destroy(c);
+        foreach (Collider c in currentGhost.GetComponentsInChildren<Collider>()) Destroy(c);
 
         if (ghostMaterial != null)
         {
-            MeshRenderer mr = currentGhost.GetComponent<MeshRenderer>();
-            if (mr != null) mr.sharedMaterial = ghostMaterial;
-
-            MeshRenderer[] childRenderers = currentGhost.GetComponentsInChildren<MeshRenderer>();
-            foreach (MeshRenderer r in childRenderers) r.sharedMaterial = ghostMaterial;
+            foreach (MeshRenderer r in currentGhost.GetComponentsInChildren<MeshRenderer>()) r.sharedMaterial = ghostMaterial;
+            foreach (SkinnedMeshRenderer r in currentGhost.GetComponentsInChildren<SkinnedMeshRenderer>()) r.sharedMaterial = ghostMaterial;
         }
 
-        currentGhost.layer = 2; // Ignore Raycast
+        currentGhost.layer = 2;
         currentGhost.SetActive(isInputActive);
+
+        // ▼▼▼ 修正: 生成時にサイズを正しく適用 ▼▼▼
+        UpdateGhostScale();
+        // ▲▲▲ ▲▲▲
     }
 
     private void UpdateGhostPosition()
@@ -202,12 +242,14 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             currentGhost.SetActive(false);
             return;
         }
-
         Vector3 targetPos = CalculateFreePosition();
-
         currentGhost.SetActive(true);
         currentGhost.transform.position = targetPos;
         currentGhost.transform.rotation = Quaternion.Euler(slotRotations[currentSlotIndex]);
+
+        // ▼▼▼ 修正: 移動中もサイズ維持 ▼▼▼
+        UpdateGhostScale();
+        // ▲▲▲ ▲▲▲
     }
 
     private void TryPlaceCurrentObject()
@@ -216,7 +258,6 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         if (objID == -1) return;
 
         Vector3 spawnPosition = CalculateFreePosition();
-
         GameObject objToSpawn = objectPoolManager.GetNextBlock(objID);
 
         if (objToSpawn != null)
@@ -226,18 +267,28 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             Rigidbody rb = objToSpawn.GetComponent<Rigidbody>();
             if (rb != null)
             {
-                rb.isKinematic = true;
-                rb.useGravity = false;
                 rb.velocity = Vector3.zero;
                 rb.angularVelocity = Vector3.zero;
+                rb.useGravity = false;
+                rb.isKinematic = true;
             }
 
             objToSpawn.transform.rotation = Quaternion.Euler(slotRotations[currentSlotIndex]);
             objToSpawn.transform.position = spawnPosition;
+
+            // ▼▼▼ 修正: 配置する本番オブジェクトにもスケール計算を適用 ▼▼▼
+            GameObject prefab = objectPoolManager.objectPrefabs[objID];
+            Vector3 baseScale = prefab.transform.localScale;
+            float s = slotScales[currentSlotIndex];
+            if (s <= 0.01f) s = 1.0f;
+
+            objToSpawn.transform.localScale = baseScale * s;
+            // ▲▲▲ ▲▲▲
+
             objToSpawn.SetActive(true);
 
             handheldInventory[currentSlotIndex] = -1;
-            slotRotations[currentSlotIndex] = Vector3.zero;
+            TryRefillSlot(currentSlotIndex);
 
             UpdateSelectionUI();
             UpdateStockUI();
@@ -258,80 +309,49 @@ public class PlayerInventoryManager : UdonSharpBehaviour
 
             if (hitObj.layer == blockLayer)
             {
-                int emptySlot = -1;
-                for (int i = 0; i < handheldInventory.Length; i++)
+                int objID = GetObjectIdFromInstance(hitObj);
+                if (objID == -1) return;
+
+                int targetSlot = -1;
+                for (int i = 0; i < 5; i++)
                 {
                     if (handheldInventory[i] == -1)
                     {
-                        emptySlot = i;
+                        targetSlot = i;
                         break;
                     }
                 }
 
-                if (emptySlot != -1)
+                if (targetSlot == -1)
                 {
-                    int objID = GetObjectIdFromInstance(hitObj);
-                    if (objID != -1)
+                    if (reserveCount < 5)
                     {
-                        handheldInventory[emptySlot] = objID;
-                        slotRotations[emptySlot] = Vector3.zero;
-
-                        Networking.SetOwner(localPlayer, hitObj);
-                        hitObj.SetActive(false);
-                        UpdateSelectionUI();
-                        UpdateStockUI();
-                        UpdateGhostModel();
+                        int itemToPush = handheldInventory[currentSlotIndex];
+                        reserveInventory[reserveCount] = itemToPush;
+                        reserveCount++;
+                        targetSlot = currentSlotIndex;
                     }
+                    else return;
+                }
+
+                if (targetSlot != -1)
+                {
+                    handheldInventory[targetSlot] = objID;
+                    slotRotations[targetSlot] = Vector3.zero;
+                    slotScales[targetSlot] = 1.0f;
+
+                    Networking.SetOwner(localPlayer, hitObj);
+                    hitObj.SetActive(false);
+                    UpdateSelectionUI();
+                    UpdateStockUI();
+                    UpdateGhostModel();
                 }
             }
         }
     }
 
-    private int GetObjectIdFromInstance(GameObject instance)
-    {
-        if (instance == null || objectPoolManager == null) return -1;
-        string instanceName = instance.name;
-
-        for (int i = 0; i < objectPoolManager.objectPrefabs.Length; i++)
-        {
-            GameObject prefab = objectPoolManager.objectPrefabs[i];
-            if (prefab != null && instanceName.StartsWith(prefab.name))
-            {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private Vector3 CalculateFreePosition()
-    {
-        VRCPlayerApi.TrackingData headData = localPlayer.GetTrackingData(VRCPlayerApi.TrackingDataType.Head);
-        Vector3 startPos = headData.position;
-        Vector3 dir = headData.rotation * Vector3.forward;
-
-        RaycastHit hit;
-        int layerMask = ~(1 << blockLayer);
-
-        if (Physics.Raycast(startPos, dir, out hit, maxReachDistance, layerMask))
-        {
-            return hit.point;
-        }
-        else
-        {
-            return startPos + (dir * maxReachDistance);
-        }
-    }
-
-    public void SetRandomInventory()
-    {
-        if (objectPoolManager == null) return;
-        int typeCount = objectPoolManager.objectPrefabs.Length;
-        for (int i = 0; i < handheldInventory.Length; i++)
-        {
-            handheldInventory[i] = Random.Range(0, typeCount);
-            slotRotations[i] = Vector3.zero;
-        }
-    }
+    private int GetObjectIdFromInstance(GameObject instance) { if (instance == null || objectPoolManager == null) return -1; string instanceName = instance.name; for (int i = 0; i < objectPoolManager.objectPrefabs.Length; i++) { GameObject prefab = objectPoolManager.objectPrefabs[i]; if (prefab != null && instanceName.StartsWith(prefab.name)) { return i; } } return -1; }
+    private Vector3 CalculateFreePosition() { VRCPlayerApi.TrackingData headData = localPlayer.GetTrackingData(VRCPlayerApi.TrackingDataType.Head); Vector3 startPos = headData.position; Vector3 dir = headData.rotation * Vector3.forward; RaycastHit hit; int layerMask = ~(1 << blockLayer); if (Physics.Raycast(startPos, dir, out hit, maxReachDistance, layerMask)) { return hit.point; } else { return startPos + (dir * maxReachDistance); } }
 
     private void UpdateSelectionUI()
     {
@@ -352,30 +372,21 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             }
         }
     }
+
     private void UpdateStockUI()
     {
         if (stockText != null)
         {
-            int currentCount = 0;
-            foreach (int id in handheldInventory) if (id != -1) currentCount++;
-            stockText.text = "Hand: " + currentCount.ToString() + " / 5";
+            int handCount = 0;
+            foreach (int id in handheldInventory) if (id != -1) handCount++;
+            int total = handCount + reserveCount;
+            stockText.text = "Stock: " + total.ToString() + " / 10";
         }
     }
 
     public void ClearAllBlocks()
     {
         if (objectPoolManager == null || objectPoolManager.objectPools == null) return;
-
-        for (int i = 0; i < objectPoolManager.objectPools.Length; i++)
-        {
-            if (objectPoolManager.objectPools[i] == null) continue;
-            for (int j = 0; j < objectPoolManager.objectPools[i].Length; j++)
-            {
-                if (objectPoolManager.objectPools[i][j] != null)
-                {
-                    objectPoolManager.objectPools[i][j].SetActive(false);
-                }
-            }
-        }
+        for (int i = 0; i < objectPoolManager.objectPools.Length; i++) { if (objectPoolManager.objectPools[i] == null) continue; for (int j = 0; j < objectPoolManager.objectPools[i].Length; j++) { if (objectPoolManager.objectPools[i][j] != null) { objectPoolManager.objectPools[i][j].SetActive(false); } } }
     }
 }
