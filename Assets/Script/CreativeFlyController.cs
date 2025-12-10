@@ -7,7 +7,6 @@ public class CreativeFlyController : UdonSharpBehaviour
 {
     [Tooltip("通常時の移動速度")]
     public float moveSpeed = 3.0f;
-
     [Tooltip("ダッシュ時の移動速度")]
     public float sprintSpeed = 6.0f;
 
