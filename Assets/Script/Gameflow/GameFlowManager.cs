@@ -200,7 +200,7 @@ public class GameFlowManager : UdonSharpBehaviour
             // Transformの参照を持っていないので、座標(0, -2.5, 60)を直接指定するか、
             // 別途 lobbySpawnPoint を作って登録すると綺麗です。
             // ここでは簡易的に座標直打ちします。
-            localPlayer.TeleportTo(new Vector3(0, -2.5f, 60), Quaternion.identity);
+            localPlayer.TeleportTo(new Vector3(0, -6.0f, 0), Quaternion.identity);
         }
         UpdateUI();
     }
