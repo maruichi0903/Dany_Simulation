@@ -172,8 +172,6 @@ public class PlayerInventoryManager : UdonSharpBehaviour
                 slotRotations[currentSlotIndex].z += rotAmount;
                 slotRotations[currentSlotIndex].z = Mathf.Round(slotRotations[currentSlotIndex].z / rotationSnapAngle) * rotationSnapAngle;
             }
-
-            // 入力時に即座にサイズ反映
             UpdateGhostScale();
         }
 
@@ -181,25 +179,20 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         if (Input.GetKeyDown(KeyCode.R) || Input.GetMouseButtonDown(1)) TryReturnObjectToHand();
     }
 
-    // ▼▼▼ 追加: スケール計算用の便利関数 ▼▼▼
     private void UpdateGhostScale()
     {
         if (currentGhost == null) return;
         int objID = handheldInventory[currentSlotIndex];
         if (objID == -1 || objectPoolManager == null) return;
 
-        // Prefabの「元の大きさ」を取得
         GameObject prefab = objectPoolManager.objectPrefabs[objID];
         Vector3 baseScale = prefab.transform.localScale;
 
-        // 倍率計算 (0以下防止)
         float s = slotScales[currentSlotIndex];
         if (s <= 0.01f) s = 1.0f;
 
-        // 元の大きさ × 倍率
         currentGhost.transform.localScale = baseScale * s;
     }
-    // ▲▲▲ ▲▲▲
 
     private void UpdateGhostModel()
     {
@@ -272,23 +265,26 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             objToSpawn.transform.rotation = Quaternion.Euler(slotRotations[currentSlotIndex]);
             objToSpawn.transform.position = spawnPosition;
 
+            // スケール計算
             GameObject prefab = objectPoolManager.objectPrefabs[objID];
             Vector3 baseScale = prefab.transform.localScale;
             float s = slotScales[currentSlotIndex];
             if (s <= 0.01f) s = 1.0f;
+            Vector3 finalScale = baseScale * s;
 
-            objToSpawn.transform.localScale = baseScale * s;
-
-            //objToSpawn.SetActive(true);
+            // ▼▼▼ 修正: 新しい Place 関数を呼ぶだけ！ ▼▼▼
             GameBlock block = objToSpawn.GetComponent<GameBlock>();
             if (block != null)
             {
-                block.Spawn(); // 全員に「表示」命令を送る
+                // これ1行で「表示」と「大きさ同期」を全部やる
+                block.Place(finalScale);
             }
             else
             {
-                objToSpawn.SetActive(true); // スクリプトがない場合の保険一応
+                objToSpawn.SetActive(true);
+                objToSpawn.transform.localScale = finalScale;
             }
+
             handheldInventory[currentSlotIndex] = -1;
             TryRefillSlot(currentSlotIndex);
 
@@ -343,7 +339,12 @@ public class PlayerInventoryManager : UdonSharpBehaviour
                     slotScales[targetSlot] = 1.0f;
 
                     Networking.SetOwner(localPlayer, hitObj);
-                    hitObj.SetActive(false);
+
+                    // ★修正: GameBlockで隠す
+                    GameBlock block = hitObj.GetComponent<GameBlock>();
+                    if (block != null) block.ResetBlock();
+                    else hitObj.SetActive(false);
+
                     UpdateSelectionUI();
                     UpdateStockUI();
                     UpdateGhostModel();
@@ -397,20 +398,17 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             {
                 if (objectPoolManager.objectPools[i][j] != null)
                 {
-                    // objectPoolManager.objectPools[i][j].SetActive(false); // ← 元のコード
-
                     GameObject obj = objectPoolManager.objectPools[i][j];
-                    if (obj.activeSelf) // 出ているものだけ消す
+                    GameBlock block = obj.GetComponent<GameBlock>();
+
+                    if (block != null)
                     {
-                        GameBlock block = obj.GetComponent<GameBlock>();
-                        if (block != null)
-                        {
-                            block.Despawn(); // 全員に「非表示」命令を送る
-                        }
-                        else
-                        {
-                            obj.SetActive(false);
-                        }
+                        // 表示されている（isVisibleがtrue）なら消す
+                        if (block.isOccupied) block.ResetBlock();
+                    }
+                    else
+                    {
+                        if (obj.activeSelf) obj.SetActive(false);
                     }
                 }
             }
