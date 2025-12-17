@@ -3,73 +3,77 @@ using UnityEngine;
 using VRC.SDKBase;
 using VRC.Udon;
 
-public class CreativeFlyController : UdonSharpBehaviour
+public class CreativeFlyController : UdonSharpBehaviour // ← ここをファイル名と合わせる！
 {
-    [Tooltip("通常時の移動速度")]
-    public float moveSpeed = 3.0f;
-    [Tooltip("ダッシュ時の移動速度")]
-    public float sprintSpeed = 6.0f;
+    [Header("Settings")]
+    public float flySpeed = 6.0f;
+    public float verticalSpeed = 4.0f;
 
     private VRCPlayerApi localPlayer;
-    private bool isFlying = false; // フライモードが有効かどうかのフラグ
+    private bool isFlying = false;
 
     void Start()
     {
         localPlayer = Networking.LocalPlayer;
     }
-    public override void OnPlayerJoined(VRCPlayerApi player)
-    {
-        if (player.isLocal)
-        {
-            EnableFly();
-        }
-    }
-
-    public void EnableFly()
-    {
-        isFlying = true;
-        localPlayer.SetGravityStrength(0f);
-    }
-
-    // フライモードを無効にする関数
-    public void DisableFly()
-    {
-        isFlying = false;
-        localPlayer.SetGravityStrength(1.0f);
-        localPlayer.SetVelocity(Vector3.zero);
-    }
 
     void Update()
     {
-        // フライモードが有効でなければ、以下の処理は行わない
-        if (!isFlying)
+        if (localPlayer == null || !localPlayer.isLocal) return;
+
+        // Tabキーで飛行モード切替
+        if (Input.GetKeyDown(KeyCode.Tab))
         {
-            return;
+            ToggleFlight();
         }
 
-        // --- キーボード入力 ---
-        // WASDキーで前後左右の入力を取得（-1.0f ～ 1.0fの値）
-        float horizontalInput = Input.GetAxis("Horizontal"); // A, Dキー
-        float verticalInput = Input.GetAxis("Vertical");     // W, Sキー
+        if (isFlying)
+        {
+            ProcessFlightMovement();
+        }
+    }
 
-        // 上昇（スペースキー）と下降（左Shiftキー）の判定
-        bool isMovingUp = Input.GetKey(KeyCode.LeftShift);
-        bool isMovingDown = Input.GetKey(KeyCode.LeftControl);
+    private void ToggleFlight()
+    {
+        isFlying = !isFlying;
 
-        // ダッシュ（左Controlキー）の判定
-        bool isSprinting = Input.GetKey(KeyCode.Space);
+        if (isFlying)
+        {
+            localPlayer.SetGravityStrength(0f);
+            localPlayer.SetVelocity(Vector3.zero);
+        }
+        else
+        {
+            localPlayer.SetGravityStrength(1.0f);
+        }
+    }
 
-        float currentSpeed = isSprinting ? sprintSpeed : moveSpeed;
-        Quaternion headRotation = localPlayer.GetTrackingData(VRCPlayerApi.TrackingDataType.Head).rotation;
+    private void ProcessFlightMovement()
+    {
+        float h = 0f;
+        float v = 0f;
+        float upDown = 0f;
 
-        Vector3 horizontalVelocity = headRotation * new Vector3(horizontalInput, 0, verticalInput) * currentSpeed;
+        if (Input.GetKey(KeyCode.W)) v += 1f;
+        if (Input.GetKey(KeyCode.S)) v -= 1f;
+        if (Input.GetKey(KeyCode.D)) h += 1f;
+        if (Input.GetKey(KeyCode.A)) h -= 1f;
 
-        float verticalVelocityY = 0;
-        if (isMovingUp) verticalVelocityY = currentSpeed;
-        if (isMovingDown) verticalVelocityY = -currentSpeed;
+        if (Input.GetKey(KeyCode.LeftShift)) upDown += 1f;
+        if (Input.GetKey(KeyCode.LeftControl)) upDown -= 1f;
 
-        Vector3 finalVelocity = new Vector3(horizontalVelocity.x, verticalVelocityY, horizontalVelocity.z);
+        Quaternion viewRot = localPlayer.GetTrackingData(VRCPlayerApi.TrackingDataType.Head).rotation;
+        Vector3 forward = viewRot * Vector3.forward;
+        Vector3 right = viewRot * Vector3.right;
 
-        localPlayer.SetVelocity(finalVelocity);
+        forward.y = 0f;
+        forward.Normalize();
+        right.y = 0f;
+        right.Normalize();
+
+        Vector3 moveDir = (forward * v + right * h).normalized * flySpeed;
+        moveDir.y = upDown * verticalSpeed;
+
+        localPlayer.SetVelocity(moveDir);
     }
 }

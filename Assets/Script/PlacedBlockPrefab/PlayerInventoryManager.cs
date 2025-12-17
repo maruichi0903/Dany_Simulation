@@ -229,9 +229,7 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         currentGhost.layer = 2;
         currentGhost.SetActive(isInputActive);
 
-        // ▼▼▼ 修正: 生成時にサイズを正しく適用 ▼▼▼
         UpdateGhostScale();
-        // ▲▲▲ ▲▲▲
     }
 
     private void UpdateGhostPosition()
@@ -247,9 +245,7 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         currentGhost.transform.position = targetPos;
         currentGhost.transform.rotation = Quaternion.Euler(slotRotations[currentSlotIndex]);
 
-        // ▼▼▼ 修正: 移動中もサイズ維持 ▼▼▼
         UpdateGhostScale();
-        // ▲▲▲ ▲▲▲
     }
 
     private void TryPlaceCurrentObject()
@@ -276,17 +272,23 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             objToSpawn.transform.rotation = Quaternion.Euler(slotRotations[currentSlotIndex]);
             objToSpawn.transform.position = spawnPosition;
 
-            // ▼▼▼ 修正: 配置する本番オブジェクトにもスケール計算を適用 ▼▼▼
             GameObject prefab = objectPoolManager.objectPrefabs[objID];
             Vector3 baseScale = prefab.transform.localScale;
             float s = slotScales[currentSlotIndex];
             if (s <= 0.01f) s = 1.0f;
 
             objToSpawn.transform.localScale = baseScale * s;
-            // ▲▲▲ ▲▲▲
 
-            objToSpawn.SetActive(true);
-
+            //objToSpawn.SetActive(true);
+            GameBlock block = objToSpawn.GetComponent<GameBlock>();
+            if (block != null)
+            {
+                block.Spawn(); // 全員に「表示」命令を送る
+            }
+            else
+            {
+                objToSpawn.SetActive(true); // スクリプトがない場合の保険一応
+            }
             handheldInventory[currentSlotIndex] = -1;
             TryRefillSlot(currentSlotIndex);
 
@@ -387,6 +389,31 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     public void ClearAllBlocks()
     {
         if (objectPoolManager == null || objectPoolManager.objectPools == null) return;
-        for (int i = 0; i < objectPoolManager.objectPools.Length; i++) { if (objectPoolManager.objectPools[i] == null) continue; for (int j = 0; j < objectPoolManager.objectPools[i].Length; j++) { if (objectPoolManager.objectPools[i][j] != null) { objectPoolManager.objectPools[i][j].SetActive(false); } } }
+
+        for (int i = 0; i < objectPoolManager.objectPools.Length; i++)
+        {
+            if (objectPoolManager.objectPools[i] == null) continue;
+            for (int j = 0; j < objectPoolManager.objectPools[i].Length; j++)
+            {
+                if (objectPoolManager.objectPools[i][j] != null)
+                {
+                    // objectPoolManager.objectPools[i][j].SetActive(false); // ← 元のコード
+
+                    GameObject obj = objectPoolManager.objectPools[i][j];
+                    if (obj.activeSelf) // 出ているものだけ消す
+                    {
+                        GameBlock block = obj.GetComponent<GameBlock>();
+                        if (block != null)
+                        {
+                            block.Despawn(); // 全員に「非表示」命令を送る
+                        }
+                        else
+                        {
+                            obj.SetActive(false);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
