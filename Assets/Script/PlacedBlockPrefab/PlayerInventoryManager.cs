@@ -75,7 +75,9 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             reserveInventory[i] = -1;
         }
 
-        SetActiveState(false);
+        // スタート時はUIを隠す
+        if (hudRoot != null) hudRoot.SetActive(false);
+
         UpdateSelectionUI();
         UpdateStockUI();
     }
@@ -241,12 +243,14 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         UpdateGhostScale();
     }
 
+    // ▼▼▼ 修正箇所：物理演算のエラーを防ぐ ▼▼▼
     private void TryPlaceCurrentObject()
     {
         int objID = handheldInventory[currentSlotIndex];
         if (objID == -1) return;
 
         Vector3 spawnPosition = CalculateFreePosition();
+        // ここでnullが返ってくると「No free object found」エラーになる
         GameObject objToSpawn = objectPoolManager.GetNextBlock(objID);
 
         if (objToSpawn != null)
@@ -254,10 +258,17 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             Networking.SetOwner(localPlayer, objToSpawn);
 
             Rigidbody rb = objToSpawn.GetComponent<Rigidbody>();
-            if (rb != null)
+
+            // ★修正：Kinematic（物理無効）なら速度をいじらない
+            if (rb != null && !rb.isKinematic)
             {
                 rb.velocity = Vector3.zero;
                 rb.angularVelocity = Vector3.zero;
+            }
+
+            // 念のため固定
+            if (rb != null)
+            {
                 rb.useGravity = false;
                 rb.isKinematic = true;
             }
@@ -265,18 +276,15 @@ public class PlayerInventoryManager : UdonSharpBehaviour
             objToSpawn.transform.rotation = Quaternion.Euler(slotRotations[currentSlotIndex]);
             objToSpawn.transform.position = spawnPosition;
 
-            // スケール計算
             GameObject prefab = objectPoolManager.objectPrefabs[objID];
             Vector3 baseScale = prefab.transform.localScale;
             float s = slotScales[currentSlotIndex];
             if (s <= 0.01f) s = 1.0f;
             Vector3 finalScale = baseScale * s;
 
-            // ▼▼▼ 修正: 新しい Place 関数を呼ぶだけ！ ▼▼▼
             GameBlock block = objToSpawn.GetComponent<GameBlock>();
             if (block != null)
             {
-                // これ1行で「表示」と「大きさ同期」を全部やる
                 block.Place(finalScale);
             }
             else
@@ -340,7 +348,6 @@ public class PlayerInventoryManager : UdonSharpBehaviour
 
                     Networking.SetOwner(localPlayer, hitObj);
 
-                    // ★修正: GameBlockで隠す
                     GameBlock block = hitObj.GetComponent<GameBlock>();
                     if (block != null) block.ResetBlock();
                     else hitObj.SetActive(false);
@@ -389,28 +396,13 @@ public class PlayerInventoryManager : UdonSharpBehaviour
 
     public void ClearAllBlocks()
     {
-        if (objectPoolManager == null || objectPoolManager.objectPools == null) return;
+        if (objectPoolManager == null || objectPoolManager.scenePoolObjects == null) return;
 
-        for (int i = 0; i < objectPoolManager.objectPools.Length; i++)
+        foreach (GameBlock block in objectPoolManager.scenePoolObjects)
         {
-            if (objectPoolManager.objectPools[i] == null) continue;
-            for (int j = 0; j < objectPoolManager.objectPools[i].Length; j++)
+            if (block != null && block.isOccupied)
             {
-                if (objectPoolManager.objectPools[i][j] != null)
-                {
-                    GameObject obj = objectPoolManager.objectPools[i][j];
-                    GameBlock block = obj.GetComponent<GameBlock>();
-
-                    if (block != null)
-                    {
-                        // 表示されている（isVisibleがtrue）なら消す
-                        if (block.isOccupied) block.ResetBlock();
-                    }
-                    else
-                    {
-                        if (obj.activeSelf) obj.SetActive(false);
-                    }
-                }
+                block.ResetBlock();
             }
         }
     }

@@ -5,10 +5,11 @@ using VRC.Udon;
 
 public class ObjectPoolManager : UdonSharpBehaviour
 {
-    public GameObject[] objectPrefabs;
-    public int poolSizePerType = 10;
-    public GameObject[][] objectPools;
-    private int[] currentPoolIndex;
+    [Header("ここにPrefabを全種類登録する（名前照合用）")]
+    public GameObject[] objectPrefabs; // ← 元々あったこの配列は復活させます！
+
+    [Header("ここにシーン上の全ての複製ブロックを登録する")]
+    public GameBlock[] scenePoolObjects; // ← ここにCapsuleもCastleも全部まとめて放り込む！
 
     void Start()
     {
@@ -17,49 +18,14 @@ public class ObjectPoolManager : UdonSharpBehaviour
 
     private void InitializePools()
     {
-        if (objectPrefabs == null || objectPrefabs.Length == 0) return;
-        int typeCount = objectPrefabs.Length;
+        if (scenePoolObjects == null) return;
 
-        objectPools = new GameObject[typeCount][];
-        currentPoolIndex = new int[typeCount];
-
-        for (int i = 0; i < typeCount; i++)
+        foreach (GameBlock block in scenePoolObjects)
         {
-            objectPools[i] = new GameObject[poolSizePerType];
-            currentPoolIndex[i] = 0;
-            GameObject prefab = objectPrefabs[i];
-            if (prefab == null) continue;
-
-            for (int j = 0; j < poolSizePerType; j++)
+            if (block != null)
             {
-                GameObject newObj = Instantiate(prefab);
-                newObj.SetActive(true);
-
-                // 1. 常に Active(true) にする
-                newObj.SetActive(true);
-
-                // 2. 物理演算を止める
-                Rigidbody rb = newObj.GetComponent<Rigidbody>();
-                if (rb != null)
-                {
-                    rb.isKinematic = true;
-                    rb.useGravity = false;
-                }
-
-                // 3. GameBlockの機能で「非表示状態」として初期化する
-                GameBlock block = newObj.GetComponent<GameBlock>();
-                if (block != null)
-                {
-                    // ここで強制的に変数をfalseにして見た目を更新
-                    // （Start時に自動で呼ばれるが、念のため明示的にやる）
-                    block.ResetBlock();
-                }
-                else
-                {
-                    newObj.SetActive(false);
-                }
-
-                objectPools[i][j] = newObj;
+                // 最初はすべてリセット（非表示）
+                block.ResetBlock();
             }
         }
         Debug.Log("[ObjectPoolManager] Pools initialized.");
@@ -67,20 +33,37 @@ public class ObjectPoolManager : UdonSharpBehaviour
 
     public GameObject GetNextBlock(int objectID)
     {
-        if (objectPools == null || objectID < 0 || objectID >= objectPools.Length) return null;
+        if (objectPrefabs == null || objectID < 0 || objectID >= objectPrefabs.Length) return null;
+        if (scenePoolObjects == null) return null;
 
-        GameObject[] pool = objectPools[objectID];
-        int index = currentPoolIndex[objectID];
-        GameObject obj = pool[index];
+        // 探したいPrefabの元々の名前（例: "Cube"）
+        string targetName = objectPrefabs[objectID].name;
 
-        currentPoolIndex[objectID] = (index + 1) % poolSizePerType;
-
-        GameBlock block = obj.GetComponent<GameBlock>();
-        if (block != null && block.isOccupied)
+        foreach (GameBlock block in scenePoolObjects)
         {
-            block.ResetBlock();
+            if (block == null) continue;
+
+            string blockName = block.gameObject.name;
+
+            // ★修正ポイント：判定ロジックを改良しました
+            // 1. 完全一致（"Cube"）
+            // 2. 複製時の番号付き（"Cube (1)"） ※ここにスペースを入れた！
+            bool isMatch = (blockName == targetName) ||
+                           blockName.StartsWith(targetName + " (");
+
+            if (isMatch)
+            {
+                if (!block.isOccupied)
+                {
+                    GameObject obj = block.gameObject;
+                    if (!Networking.IsOwner(obj)) Networking.SetOwner(Networking.LocalPlayer, obj);
+                    return obj;
+                }
+            }
         }
 
-        return obj;
+        // ここがログに出ている警告の場所です
+        Debug.LogWarning($"[ObjectPoolManager] No free object found for ID {objectID} ({targetName})");
+        return null;
     }
 }
