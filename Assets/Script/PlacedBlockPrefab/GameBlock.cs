@@ -50,11 +50,17 @@ public class GameBlock : UdonSharpBehaviour
 
     private void UpdateVisuals()
     {
-        // 同期などで呼ばれた時も、表示フラグが立っているなら本体をオンにする
-        if (isVisible && !gameObject.activeSelf) gameObject.SetActive(true);
-
-        transform.localScale = syncScale;
+        // RendererとColliderだけで表示・非表示を切り替える
+        // ※本体のSetActive(false)は極力避ける（同期が止まるため）
         foreach (var r in GetComponentsInChildren<Renderer>()) r.enabled = isVisible;
         foreach (var c in GetComponentsInChildren<Collider>()) c.enabled = isVisible;
+
+        transform.localScale = syncScale;
+
+        // もしどうしてもSetActiveを使いたい場合は、オーナー以外が勝手にいじらないようにする
+        if (isVisible)
+        {
+            if (!gameObject.activeSelf) gameObject.SetActive(true);
+        }
     }
 }
