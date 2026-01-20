@@ -1,4 +1,5 @@
-﻿using UdonSharp;
+﻿// GameBlock.cs (全文)
+using UdonSharp;
 using UnityEngine;
 using VRC.SDKBase;
 using VRC.Udon;
@@ -19,14 +20,10 @@ public class GameBlock : UdonSharpBehaviour
     {
         if (Networking.IsOwner(gameObject))
         {
-            // ★【重要】ここでオブジェクト本体を「オン」にする！
-            // これがないと、Rendererをオンにしても表示されません。
-            gameObject.SetActive(true);
-
             isVisible = true;
             syncScale = scale;
+            RequestSerialization(); // 順番に注意：値を決めてからシリアライズ
             UpdateVisuals();
-            RequestSerialization();
         }
     }
 
@@ -35,11 +32,9 @@ public class GameBlock : UdonSharpBehaviour
         if (Networking.IsOwner(gameObject))
         {
             isVisible = false;
-            UpdateVisuals();
             RequestSerialization();
-
-            // 片付ける時は、誤動作防止のため本体ごとオフにする
-            gameObject.SetActive(false);
+            UpdateVisuals();
+            // ★ SetActive(false)は絶対に使わない！
         }
     }
 
@@ -50,17 +45,13 @@ public class GameBlock : UdonSharpBehaviour
 
     private void UpdateVisuals()
     {
-        // RendererとColliderだけで表示・非表示を切り替える
-        // ※本体のSetActive(false)は極力避ける（同期が止まるため）
+        // レンダラーとコライダーだけをオフにする
         foreach (var r in GetComponentsInChildren<Renderer>()) r.enabled = isVisible;
         foreach (var c in GetComponentsInChildren<Collider>()) c.enabled = isVisible;
 
         transform.localScale = syncScale;
 
-        // もしどうしてもSetActiveを使いたい場合は、オーナー以外が勝手にいじらないようにする
-        if (isVisible)
-        {
-            if (!gameObject.activeSelf) gameObject.SetActive(true);
-        }
+        // 本体は常に「アクティブ」にしておかないと通信が届かない
+        if (!gameObject.activeSelf) gameObject.SetActive(true);
     }
 }

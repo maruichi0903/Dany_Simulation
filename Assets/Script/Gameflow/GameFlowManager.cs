@@ -48,10 +48,11 @@ public class GameFlowManager : UdonSharpBehaviour
     [UdonSynced] public int citizenWins = 0;
     [UdonSynced] public int werewolfWins = 0;
 
-    private VRCPlayerApi localPlayer;
+    [Header("Game State")]
+    [UdonSynced] public bool isBuildingPhase = false; // [UdonSynced]を追加
+    [UdonSynced] public bool isThinkingPhase = false; // [UdonSynced]を追加
 
-    [HideInInspector] public bool isBuildingPhase = false;
-    [HideInInspector] public bool isThinkingPhase = false;
+    private VRCPlayerApi localPlayer;
 
     private bool isProcessingResult = false;
     private float currentTimer = 0f;
@@ -70,14 +71,18 @@ public class GameFlowManager : UdonSharpBehaviour
         UpdateUI();
     }
 
-    // ★誰かがワールドに入ってきたら呼ばれる（自動参加）
     public override void OnPlayerJoined(VRCPlayerApi player)
     {
-        // マスター（親機）だけがリスト管理の仕事をする
         if (Networking.IsOwner(gameObject))
         {
             RegisterPlayer(player);
+            SendCustomEventDelayedSeconds(nameof(_ForceSync), 2.0f);
         }
+    }
+
+    public void _ForceSync()
+    {
+        if (Networking.IsOwner(gameObject)) RequestSerialization();
     }
 
     // ★誰かがワールドから抜けたら呼ばれる（自動削除）
@@ -172,7 +177,10 @@ public class GameFlowManager : UdonSharpBehaviour
         }
     }
 
-    public override void OnDeserialization() { UpdateUI(); }
+    public override void OnDeserialization()
+    {
+        UpdateUI();
+    }
 
     // ★スタートボタンが押された時の処理
     public void OnClickStart()
@@ -255,7 +263,27 @@ public class GameFlowManager : UdonSharpBehaviour
 
         UpdateInventoryState();
     }
-    public void EnterThinkingPhase() { isBuildingPhase = false; isThinkingPhase = true; currentTimer = thinkingTimeLimit; if (inventoryManager != null) inventoryManager.SetActiveState(false); if (phaseMessageText != null) { if (localPlayer.playerId == currentGuesserId) phaseMessageText.text = "<color=green>回答してください</color>"; else phaseMessageText.text = "<color=yellow>シンキングタイム</color>"; } if (votingUIRoot != null) votingUIRoot.SetActive(true); }
+    public void EnterThinkingPhase()
+    {
+        isBuildingPhase = false;
+        isThinkingPhase = true;
+        currentTimer = thinkingTimeLimit;
+
+        Debug.Log("[GameFlow] EnterThinkingPhase called. Activating voting UI."); // ログ追加
+
+        if (inventoryManager != null) inventoryManager.SetActiveState(false);
+
+        if (phaseMessageText != null)
+        {
+            if (localPlayer.playerId == currentGuesserId)
+                phaseMessageText.text = "<color=green>回答してください</color>";
+            else
+                phaseMessageText.text = "<color=yellow>シンキングタイム</color>";
+        }
+
+        // ここでUIを表示
+        if (votingUIRoot != null) votingUIRoot.SetActive(true);
+    }
 
     public void UpdateUI()
     {

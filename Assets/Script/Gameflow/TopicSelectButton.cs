@@ -3,20 +3,24 @@ using UnityEngine;
 using VRC.SDKBase;
 using VRC.Udon;
 
+// TopicSelectButton.cs
 public class TopicSelectButton : UdonSharpBehaviour
 {
-    [Tooltip("このボタンが担当する単語の番号 (0~4)")]
     public int buttonIndex;
-
-    [Tooltip("判定を依頼するマネージャー")]
     public TopicManager topicManager;
 
-    public override void Interact()
+    // Interactの代わりに、クリック専用の関数を作る
+    public void OnButtonClick()
     {
         if (topicManager != null)
         {
-            // マネージャーに「〇番が選ばれた」と報告用
             topicManager.OnSubmitAnswer(buttonIndex);
         }
+    }
+
+    // Interactも残しておけば、近づいてEキーで押すことも可能です
+    public override void Interact()
+    {
+        OnButtonClick();
     }
 }

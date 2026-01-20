@@ -86,8 +86,23 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     {
         if (!localPlayer.isLocal) return;
         if (!isInputActive) return;
+
         HandleInput();
         UpdateGhostPosition();
+        UpdateHUDPosition();
+    }
+
+    private void UpdateHUDPosition()
+    {
+        if (hudRoot == null) return;
+        VRCPlayerApi.TrackingData headData = localPlayer.GetTrackingData(VRCPlayerApi.TrackingDataType.Head);
+
+        // UIを少し高く、少し前に出すための設定（数値はお好みで調整してください）
+        // x: 左右, y: 上下 (0.2fで少し上へ), z: 前後 (0.5fで50cm前方へ)
+        Vector3 offset = new Vector3(-0.4f, -0.2f, 0.65f);
+
+        hudRoot.transform.position = headData.position + (headData.rotation * offset);
+        hudRoot.transform.rotation = headData.rotation;
     }
 
     public void RefillInventory()
@@ -361,7 +376,19 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     }
 
     private int GetObjectIdFromInstance(GameObject instance) { if (instance == null || objectPoolManager == null) return -1; string instanceName = instance.name; for (int i = 0; i < objectPoolManager.objectPrefabs.Length; i++) { GameObject prefab = objectPoolManager.objectPrefabs[i]; if (prefab != null && instanceName.StartsWith(prefab.name)) { return i; } } return -1; }
-    private Vector3 CalculateFreePosition() { VRCPlayerApi.TrackingData headData = localPlayer.GetTrackingData(VRCPlayerApi.TrackingDataType.Head); Vector3 startPos = headData.position; Vector3 dir = headData.rotation * Vector3.forward; RaycastHit hit; int layerMask = ~(1 << blockLayer); if (Physics.Raycast(startPos, dir, out hit, maxReachDistance, layerMask)) { return hit.point; } else { return startPos + (dir * maxReachDistance); } }
+    private Vector3 CalculateFreePosition()
+    {
+        VRCPlayerApi.TrackingData headData = localPlayer.GetTrackingData(VRCPlayerApi.TrackingDataType.Head);
+        Vector3 startPos = headData.position;
+        Vector3 dir = headData.rotation * Vector3.forward;
+        RaycastHit hit;
+
+        // ★重要：UI(5番)と自分自身(9,10番)を無視する
+        int layerMask = ~((1 << 5) | (1 << 9) | (1 << 10) | (1 << blockLayer));
+
+        if (Physics.Raycast(startPos, dir, out hit, maxReachDistance, layerMask)) return hit.point;
+        else return startPos + (dir * maxReachDistance);
+    }
 
     private void UpdateSelectionUI()
     {
