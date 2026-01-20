@@ -332,8 +332,24 @@ public class GameFlowManager : UdonSharpBehaviour
     public void ProcessWrongAnswer() { isProcessingResult = true; if (phaseMessageText != null) phaseMessageText.text = "<color=#FF0000>不正解（または時間切れ）</color>"; if (Networking.IsOwner(gameObject)) { werewolfWins++; RequestSerialization(); if (werewolfWins >= 3) SendCustomEventDelayedSeconds(nameof(GameOverWerewolf), 3.0f); else SendCustomEventDelayedSeconds(nameof(StartNextTurn), 3.0f); } }
     public void GameOverCitizen() { SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "ShowCitizenWin"); }
     public void GameOverWerewolf() { SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "ShowWerewolfWin"); }
-    public void ShowCitizenWin() { if (phaseMessageText != null) phaseMessageText.text = "<color=#00FFFF><size=200%>市民チームの勝利！</size></color>"; EndGameCleanup(); }
-    public void ShowWerewolfWin() { if (phaseMessageText != null) phaseMessageText.text = "<color=#FF0000><size=200%>人狼チームの勝利！</size></color>"; EndGameCleanup(); }
+
+    public void ShowCitizenWin()
+    {
+        if (phaseMessageText != null)
+            phaseMessageText.text = "<color=#00FFFF><size=200%>市民チームの勝利！</size></color>";
+
+        SendCustomEventDelayedSeconds(nameof(EndGameCleanup), 5.0f);
+    }
+
+    public void ShowWerewolfWin()
+    {
+        if (phaseMessageText != null)
+            phaseMessageText.text = "<color=#FF0000><size=200%>市民チームの勝利！</size></color>";
+
+        // すぐに EndGameCleanup を呼ばず、5秒遅らせる
+        SendCustomEventDelayedSeconds(nameof(EndGameCleanup), 5.0f);
+    }
+
 
     public void EndGameCleanup()
     {

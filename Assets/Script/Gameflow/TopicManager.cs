@@ -32,6 +32,11 @@ public class TopicManager : UdonSharpBehaviour
     public override void OnDeserialization()
     {
         UpdateTopicUI();
+        if (gameFlowManager != null)
+        {
+            bool amIParent = (Networking.LocalPlayer.playerId == gameFlowManager.currentParentId);
+            HighlightAnswerForParent(amIParent);
+        }
     }
 
     // ... (DrawNewTopics, UpdateTopicUI, HighlightAnswerForParent はそのまま) ...
