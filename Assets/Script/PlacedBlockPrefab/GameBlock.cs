@@ -31,7 +31,7 @@ public class GameBlock : UdonSharpBehaviour
         if (Networking.IsOwner(gameObject))
         {
             isVisible = false;
-            // 非アクティブにする代わりに、地の果て（地下100m）に飛ばす
+            // 非アクティブにする代わりに、地の果て（地下100m）に飛ばすごり押しで
             transform.position = new Vector3(0, -100f, 0);
             RequestSerialization();
             UpdateVisuals();
@@ -52,7 +52,7 @@ public class GameBlock : UdonSharpBehaviour
 
         transform.localScale = syncScale;
 
-        // ★重要：本体のチェック（SetActive）は常にオンにしておかないと通信が届かない
+        // 重要：本体のチェック（SetActive）は常にオンにしておかないと通信が届かない
         if (!gameObject.activeSelf) gameObject.SetActive(true);
     }
 }

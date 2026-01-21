@@ -10,7 +10,6 @@ public class TopicManager : UdonSharpBehaviour
     [Header("Managers")]
     public GameFlowManager gameFlowManager;
 
-    // ... (他の変数はそのまま) ...
     public TextMeshProUGUI[] topicTexts;
     public TextMeshPro[] votingButtonTexts;
     public Image[] topicPanels;
@@ -20,6 +19,9 @@ public class TopicManager : UdonSharpBehaviour
 
     [UdonSynced] private int[] currentWordIndices = new int[5];
     [UdonSynced] private int correctIndex = -1;
+
+    [Header("UI Text References")]
+    public TextMeshProUGUI correctTopicText;
 
     private VRCPlayerApi localPlayer;
 
@@ -39,7 +41,26 @@ public class TopicManager : UdonSharpBehaviour
         }
     }
 
-    // ... (DrawNewTopics, UpdateTopicUI, HighlightAnswerForParent はそのまま) ...
+    public void _ApplyTopicHighlight(bool shouldHighlight)
+    {
+        for (int i = 0; i < 5; i++)
+        {
+            if (i < topicTexts.Length && topicTexts[i] != null)
+            {
+                // 自分が親で、かつそのインデックスが正解なら赤、それ以外は白
+                if (shouldHighlight && i == correctIndex)
+                {
+                    topicTexts[i].color = answerTextColor;
+                }
+                else
+                {
+                    topicTexts[i].color = normalTextColor;
+                }
+            }
+        }
+    }
+
+
     public void DrawNewTopics()
     {
         if (!Networking.IsOwner(gameObject)) Networking.SetOwner(localPlayer, gameObject);
@@ -65,38 +86,36 @@ public class TopicManager : UdonSharpBehaviour
             string word = "---";
             int wordID = currentWordIndices[i];
             if (wordID >= 0 && wordID < wordDatabase.Length) word = wordDatabase[wordID];
-            if (i < topicTexts.Length && topicTexts[i] != null) { topicTexts[i].text = word; topicTexts[i].color = normalTextColor; }
-            if (i < votingButtonTexts.Length && votingButtonTexts[i] != null) votingButtonTexts[i].text = word;
+
+            if (i < topicTexts.Length && topicTexts[i] != null)
+            {
+                topicTexts[i].text = word;
+                // 色のリセット（ハイライトは別のメソッドで行う）
+                topicTexts[i].color = normalTextColor;
+            }
+            if (i < votingButtonTexts.Length && votingButtonTexts[i] != null)
+            {
+                votingButtonTexts[i].text = word;
+            }
         }
     }
 
     public void HighlightAnswerForParent(bool amIParent)
     {
-        for (int i = 0; i < 5; i++)
-        {
-            if (i < topicTexts.Length && topicTexts[i] != null)
-            {
-                if (amIParent && i == correctIndex) topicTexts[i].color = answerTextColor;
-                else topicTexts[i].color = normalTextColor;
-            }
-        }
+        _ApplyTopicHighlight(amIParent);
     }
 
     // --- 回答受付 ---
 
     public void OnSubmitAnswer(int index)
     {
-        // ▼▼▼ 追加: 回答者（Guesser）本人でなければ無視！ ▼▼▼
         if (gameFlowManager != null)
         {
-            // 自分が回答者じゃないなら、ここで終了
             if (localPlayer.playerId != gameFlowManager.currentGuesserId)
             {
-                // 必要なら「あなたは回答者ではありません」等の音を鳴らしてもよい
                 return;
             }
         }
-        // ▲▲▲ ▲▲▲
 
         SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.Owner, "CheckAnswer_" + index);
     }

@@ -15,9 +15,6 @@ public class GameFlowManager : UdonSharpBehaviour
 
     public GameObject topicUIRoot;
     public GameObject votingUIRoot;
-
-    // joinButtonは不要になりますが、エラー防止のため残して
-    public GameObject joinButton;
     public GameObject startButton;
 
     public Transform gameSpawnPoint;
@@ -36,38 +33,37 @@ public class GameFlowManager : UdonSharpBehaviour
     public GameObject lobbyCanvasRoot;
     public GameObject gameUIRoot;
 
-    // ▼▼▼ 同期変数の管理 ▼▼▼
+    [Header("Teleport Settings")]
+    public Transform votingTeleportPoint;
+
     [UdonSynced] public int[] playerIds = new int[20];
     [UdonSynced] public int playerCount = 0;
     [UdonSynced] public int[] playerRoles = new int[20];
     [UdonSynced] public int currentParentId = -1;
-    [UdonSynced] public bool isGameStarted = false;
     [UdonSynced] public int currentGuesserId = -1;
 
-    [Header("Score Data")]
+    [UdonSynced] public bool isGameStarted = false;
+    [UdonSynced] public bool isBuildingPhase = false;
+    [UdonSynced] public bool isThinkingPhase = false;
+    [UdonSynced] public bool isProcessingResult = false;
+
     [UdonSynced] public int citizenWins = 0;
     [UdonSynced] public int werewolfWins = 0;
-
-    [Header("Game State")]
-    [UdonSynced] public bool isBuildingPhase = false; // [UdonSynced]を追加
-    [UdonSynced] public bool isThinkingPhase = false; // [UdonSynced]を追加
+    [UdonSynced] private double phaseEndTime;
 
     private VRCPlayerApi localPlayer;
-
-    private bool isProcessingResult = false;
     private float currentTimer = 0f;
+    private bool lastIsBuildingPhase = false;
 
     void Start()
     {
         localPlayer = Networking.LocalPlayer;
-        if (votingUIRoot != null) votingUIRoot.SetActive(false);
+        if (!Utilities.IsValid(localPlayer)) return;
 
-        // ★自分がマスター（最初の1人）なら、自分をリストに登録
         if (Networking.IsOwner(gameObject))
         {
             RegisterPlayer(localPlayer);
         }
-
         UpdateUI();
     }
 
@@ -76,101 +72,69 @@ public class GameFlowManager : UdonSharpBehaviour
         if (Networking.IsOwner(gameObject))
         {
             RegisterPlayer(player);
-            SendCustomEventDelayedSeconds(nameof(_ForceSync), 2.0f);
+            // スマホ等のロード遅延対策で、1秒後にも同期を要求
+            SendCustomEventDelayedSeconds(nameof(_ForceSync), 1.0f);
         }
     }
 
-    public void _ForceSync()
-    {
-        if (Networking.IsOwner(gameObject)) RequestSerialization();
-    }
+    public void _ForceSync() { if (Networking.IsOwner(gameObject)) RequestSerialization(); }
 
-    // ★誰かがワールドから抜けたら呼ばれる（自動削除）
     public override void OnPlayerLeft(VRCPlayerApi player)
     {
-        if (Networking.IsOwner(gameObject))
-        {
-            RemovePlayer(player);
-        }
+        if (Networking.IsOwner(gameObject)) RemovePlayer(player);
     }
 
-    // プレイヤー登録処理（内部用）
     private void RegisterPlayer(VRCPlayerApi player)
     {
-        if (!Utilities.IsValid(player)) return;
-        if (isGameStarted) return; // ゲーム中なら入れない
-
-        // 既にリストにいないかチェック
-        for (int i = 0; i < playerCount; i++)
-        {
-            if (playerIds[i] == player.playerId) return; // 既にいる
-        }
-
+        if (!Utilities.IsValid(player) || isGameStarted) return;
+        for (int i = 0; i < playerCount; i++) { if (playerIds[i] == player.playerId) return; }
         if (playerCount < playerIds.Length)
         {
             playerIds[playerCount] = player.playerId;
             playerCount++;
-            RequestSerialization(); // 全員に同期！
+            RequestSerialization();
             UpdateUI();
         }
     }
 
-    // プレイヤー削除処理（内部用）
     private void RemovePlayer(VRCPlayerApi player)
     {
-        if (!Utilities.IsValid(player)) return;
-
         int removeIndex = -1;
-        for (int i = 0; i < playerCount; i++)
-        {
-            if (playerIds[i] == player.playerId)
-            {
-                removeIndex = i;
-                break;
-            }
-        }
-
+        for (int i = 0; i < playerCount; i++) { if (playerIds[i] == player.playerId) { removeIndex = i; break; } }
         if (removeIndex != -1)
         {
-            // 穴埋め処理（最後の人を、空いた穴に持ってくる）
-            // ※順番が変わりますが、ロビー段階なら問題ありません
-            if (removeIndex != playerCount - 1)
-            {
-                playerIds[removeIndex] = playerIds[playerCount - 1];
-            }
+            if (removeIndex != playerCount - 1) playerIds[removeIndex] = playerIds[playerCount - 1];
             playerIds[playerCount - 1] = 0;
             playerCount--;
-
-            RequestSerialization(); // 全員に同期！
+            RequestSerialization();
             UpdateUI();
         }
     }
 
     void Update()
     {
-        // デバッグ用（Jキー参加は不要になるので削除してもOK）
-        // if (localPlayer.isMaster && Input.GetKeyDown(KeyCode.J)) DebugJoinAll();
-
         if (isGameStarted)
         {
             if (isBuildingPhase || isThinkingPhase)
             {
-                currentTimer -= Time.deltaTime;
+                currentTimer = (float)(phaseEndTime - Networking.GetServerTimeInSeconds());
+
                 if (timerText != null)
                 {
                     float displayTime = Mathf.Max(0, currentTimer);
                     timerText.text = $"Time: {displayTime:F1}";
                 }
 
-                if (localPlayer.isMaster && currentTimer <= 0)
+                // タイマー終了判定はオーナー（マスター）だけが行う
+                if (Networking.IsOwner(gameObject) && currentTimer <= 0)
                 {
                     if (isBuildingPhase)
                     {
-                        SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "EnterThinkingPhase");
+                        SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, nameof(EnterThinkingPhase));
                     }
-                    else if (isThinkingPhase)
+                    else if (isThinkingPhase && !isProcessingResult)
                     {
-                        if (!isProcessingResult) SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "ProcessTimeUp");
+                        SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, nameof(ProcessTimeUp));
                     }
                 }
             }
@@ -179,110 +143,124 @@ public class GameFlowManager : UdonSharpBehaviour
 
     public override void OnDeserialization()
     {
+        if (isBuildingPhase && !lastIsBuildingPhase)
+        {
+            if (localPlayer.playerId == currentParentId && inventoryManager != null)
+            {
+                inventoryManager.RefillInventory();
+            }
+        }
+        lastIsBuildingPhase = isBuildingPhase;
+
         UpdateUI();
     }
 
-    // ★スタートボタンが押された時の処理
-    public void OnClickStart()
-    {
-        // 誰が押してもOK。「オーナー（マスター）さん、始めてください！」とお願いを送る
-        SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.Owner, "TryStartGame");
-    }
+    public void OnClickStart() { SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.Owner, nameof(TryStartGame)); }
 
-    // ★オーナーだけが実行する開始処理
     public void TryStartGame()
     {
-        if (playerCount < 1) return; // 1人以上いないとダメ
+        if (!Networking.IsOwner(gameObject) || playerCount < 1) return;
 
         citizenWins = 0;
         werewolfWins = 0;
-
         for (int i = 0; i < 20; i++) playerRoles[i] = 0;
-        int assigned = 0;
-        int safety = 0;
 
-        // 人狼を決める
-        while (assigned < werewolfCount && safety < 100)
-        {
-            int rnd = Random.Range(0, playerCount);
-            if (playerRoles[rnd] == 0) { playerRoles[rnd] = 1; assigned++; }
-            safety++;
-        }
+        // 人狼を1人決める
+        int werewolfIdx = Random.Range(0, playerCount);
+        playerRoles[werewolfIdx] = 1;
 
-        // 親（Parent）を決める
-        int parentIndex = Random.Range(0, playerCount);
-        currentParentId = playerIds[parentIndex];
+        // 親を決める
+        int parentIdx = Random.Range(0, playerCount);
+        currentParentId = playerIds[parentIdx];
         PickNewGuesser();
 
         if (topicManager != null) topicManager.DrawNewTopics();
 
         isGameStarted = true;
-        RequestSerialization(); // 「ゲーム始まったよ」情報を全員に送信
-
-        // 全員一斉にゲーム開始シーケンスへ
-        SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "StartGameSequence");
+        RequestSerialization();
+        SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, nameof(StartGameSequence));
     }
 
-    // （JoinGame関数は削除しました）
-
-    public void PickNewGuesser() { if (playerCount <= 1) { currentGuesserId = currentParentId; return; } int guesserIndex = -1; int safety = 0; while (safety < 100) { int rnd = Random.Range(0, playerCount); if (playerIds[rnd] != currentParentId) { guesserIndex = rnd; break; } safety++; } if (guesserIndex != -1) currentGuesserId = playerIds[guesserIndex]; }
+    public void PickNewGuesser()
+    {
+        if (playerCount <= 1) { currentGuesserId = currentParentId; return; }
+        int guesserIdx = -1;
+        int safety = 0;
+        while (safety < 100)
+        {
+            int rnd = Random.Range(0, playerCount);
+            if (playerIds[rnd] != currentParentId) { guesserIdx = rnd; break; }
+            safety++;
+        }
+        if (guesserIdx != -1) currentGuesserId = playerIds[guesserIdx];
+    }
 
     public void StartGameSequence()
     {
-        isBuildingPhase = false;
-        isThinkingPhase = false;
-        isProcessingResult = false;
+        if (Networking.IsOwner(gameObject))
+        {
+            isBuildingPhase = false;
+            isThinkingPhase = false;
+            isProcessingResult = false;
+            RequestSerialization();
+        }
 
         if (topicUIRoot != null) topicUIRoot.SetActive(false);
         if (votingUIRoot != null) votingUIRoot.SetActive(false);
         if (timerText != null) timerText.text = "";
         if (phaseMessageText != null) phaseMessageText.text = "";
 
-        // 全員ワープ！
         if (localPlayer != null && gameSpawnPoint != null)
-        {
             localPlayer.TeleportTo(gameSpawnPoint.position, gameSpawnPoint.rotation);
-        }
 
         UpdateUI();
-        SendCustomEventDelayedSeconds(nameof(EnterBuildingPhase), announcementTime);
+        if (Networking.IsOwner(gameObject))
+        {
+            SendCustomEventDelayedSeconds(nameof(EnterBuildingPhase), announcementTime);
+        }
+    }
+
+    public void _NetEnterBuildingPhase()
+    {
+        SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, nameof(EnterBuildingPhase));
     }
 
     public void EnterBuildingPhase()
     {
-        isBuildingPhase = true;
-        currentTimer = buildTimeLimit;
-
-        if (bigRoleText != null) bigRoleText.text = "";
-        if (topicUIRoot != null) topicUIRoot.SetActive(true);
-
-        if (localPlayer.playerId == currentParentId && inventoryManager != null)
+        if (Networking.IsOwner(gameObject))
         {
-            inventoryManager.RefillInventory();
+            isBuildingPhase = true;
+            isThinkingPhase = false;
+            phaseEndTime = Networking.GetServerTimeInSeconds() + buildTimeLimit;
+            RequestSerialization();
         }
+        if (localPlayer.playerId == currentParentId && inventoryManager != null)
+            inventoryManager.RefillInventory();
 
-        UpdateInventoryState();
+        UpdateUI();
     }
+
     public void EnterThinkingPhase()
     {
-        isBuildingPhase = false;
-        isThinkingPhase = true;
-        currentTimer = thinkingTimeLimit;
-
-        Debug.Log("[GameFlow] EnterThinkingPhase called. Activating voting UI."); // ログ追加
-
+        if (Networking.IsOwner(gameObject))
+        {
+            isBuildingPhase = false;
+            isThinkingPhase = true;
+            phaseEndTime = Networking.GetServerTimeInSeconds() + thinkingTimeLimit;
+            RequestSerialization();
+        }
         if (inventoryManager != null) inventoryManager.SetActiveState(false);
+
+        // 回答者の強制移動
+        if (localPlayer.playerId == currentGuesserId && votingTeleportPoint != null)
+            localPlayer.TeleportTo(votingTeleportPoint.position, votingTeleportPoint.rotation);
 
         if (phaseMessageText != null)
         {
-            if (localPlayer.playerId == currentGuesserId)
-                phaseMessageText.text = "<color=green>回答してください</color>";
-            else
-                phaseMessageText.text = "<color=yellow>シンキングタイム</color>";
+            if (localPlayer.playerId == currentGuesserId) phaseMessageText.text = "<color=green>回答してください</color>";
+            else phaseMessageText.text = "<color=yellow>シンキングタイム</color>";
         }
-
-        // ここでUIを表示
-        if (votingUIRoot != null) votingUIRoot.SetActive(true);
+        UpdateUI();
     }
 
     public void UpdateUI()
@@ -292,95 +270,176 @@ public class GameFlowManager : UdonSharpBehaviour
 
         if (!isGameStarted)
         {
-            // ロビー画面の更新
             if (statusText != null) statusText.text = "Waiting... (" + playerCount + " Joined)";
             if (inventoryManager != null) inventoryManager.SetActiveState(false);
+            if (timerText != null) timerText.text = "";
         }
         else
         {
-            // ゲーム中画面の更新
-            string parentName = "Unknown";
-            VRCPlayerApi parentPlayer = VRCPlayerApi.GetPlayerById(currentParentId);
-            if (Utilities.IsValid(parentPlayer)) parentName = parentPlayer.displayName;
+            bool showBoard = (isBuildingPhase || isThinkingPhase) && !isProcessingResult;
+            if (topicUIRoot != null) topicUIRoot.SetActive(showBoard);
+            if (votingUIRoot != null) votingUIRoot.SetActive(isThinkingPhase && !isProcessingResult);
 
-            string guesserName = "Unknown";
-            VRCPlayerApi guesserPlayer = VRCPlayerApi.GetPlayerById(currentGuesserId);
-            if (Utilities.IsValid(guesserPlayer)) guesserName = guesserPlayer.displayName;
-
-            if (statusText != null) statusText.text = $"Parent: {parentName}\nGuesser: {guesserName}";
-
-            if (Utilities.IsValid(localPlayer))
+            if (topicManager != null)
             {
-                bool amIParent = (localPlayer.playerId == currentParentId);
-                if (topicManager != null) topicManager.HighlightAnswerForParent(amIParent);
-                if (!isBuildingPhase && !isThinkingPhase) ShowRoleText(amIParent);
-                UpdateInventoryState();
-                if (scoreText != null)
+                bool shouldHighlight = (localPlayer.playerId == currentParentId) && isBuildingPhase && !isProcessingResult;
+                topicManager._ApplyTopicHighlight(shouldHighlight);
+            }
+
+            if (timerText != null)
+            {
+                if (!showBoard) timerText.text = "";
+            }
+
+            if (!isBuildingPhase && !isThinkingPhase && !isProcessingResult)
+            {
+                ShowRoleText(Networking.LocalPlayer.playerId == currentParentId);
+            }
+            else
+            {
+                if (bigRoleText != null) bigRoleText.text = "";
+            }
+
+            if (!isProcessingResult)
+            {
+                if (isThinkingPhase)
                 {
-                    if (amIParent) { scoreText.text = ""; }
-                    else { scoreText.text = $"<color=#00FFFF>市民: {citizenWins}勝</color> / <color=#FF0000>人狼: {werewolfWins}勝</color>"; }
+                    if (localPlayer.playerId == currentGuesserId)
+                        phaseMessageText.text = "<color=green>回答してください</color>";
+                    else
+                        phaseMessageText.text = "<color=yellow>シンキングタイム</color>";
+                }
+                else
+                {
+                    phaseMessageText.text = ""; // 結果演出が終わったら消去
                 }
             }
+
+            if (scoreText != null)
+            {
+                scoreText.text = $"<color=#00FFFF>市民: {citizenWins}勝</color> / <color=#FF0000>人狼: {werewolfWins}勝</color>";
+            }
+
+            UpdatePlayerNames();
+            UpdateInventoryState();
         }
     }
 
-    private void ShowRoleText(bool amIParent) { int myRoleID = -1; for (int i = 0; i < playerCount; i++) { if (playerIds[i] == localPlayer.playerId) { myRoleID = playerRoles[i]; break; } } if (bigRoleText != null) { string roleStr = ""; if (myRoleID == 1) roleStr = "<color=#FF0000>あなたは <size=150%>人狼</size> です</color>"; else roleStr = "<color=#00FFFF>あなたは <size=150%>市民</size> です</color>"; if (amIParent) roleStr += "\n<color=#FFFF00>あなたは [親] です</color>"; if (localPlayer.playerId == currentGuesserId) roleStr += "\n<color=#00FF00>次は [回答者] です</color>"; bigRoleText.text = roleStr; } }
+    // プレイヤー名更新部分をスッキリさせるための補助メソッド
+    private void UpdatePlayerNames()
+    {
+        string parentName = "Unknown";
+        VRCPlayerApi p = VRCPlayerApi.GetPlayerById(currentParentId);
+        if (Utilities.IsValid(p)) parentName = p.displayName;
+
+        string guesserName = "Unknown";
+        VRCPlayerApi g = VRCPlayerApi.GetPlayerById(currentGuesserId);
+        if (Utilities.IsValid(g)) guesserName = g.displayName;
+
+        if (statusText != null) statusText.text = $"Parent: {parentName}\nGuesser: {guesserName}";
+    }
+
+    private void ShowRoleText(bool amIParent)
+    {
+        int myRoleID = -1;
+        for (int i = 0; i < playerCount; i++) { if (playerIds[i] == localPlayer.playerId) { myRoleID = playerRoles[i]; break; } }
+        if (bigRoleText != null)
+        {
+            string roleStr = (myRoleID == 1) ? "<color=#FF0000>あなたは <size=150%>人狼</size> です</color>" : "<color=#00FFFF>あなたは <size=150%>市民</size> です</color>";
+            if (amIParent) roleStr += "\n<color=#FFFF00>あなたは [親] です</color>";
+            if (localPlayer.playerId == currentGuesserId) roleStr += "\n<color=#00FF00>次は [回答者] です</color>";
+            bigRoleText.text = roleStr;
+        }
+    }
+
     private void UpdateInventoryState() { if (inventoryManager == null) return; bool amIParent = (localPlayer.playerId == currentParentId); inventoryManager.SetActiveState(isGameStarted && isBuildingPhase && amIParent); }
-    public void OnAnswerResult(bool isCorrect) { if (isProcessingResult) return; isProcessingResult = true; if (isCorrect) SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "ProcessCorrectAnswer"); else SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "ProcessWrongAnswer"); }
-    public void ProcessTimeUp() { if (isProcessingResult) return; isProcessingResult = true; SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "ProcessWrongAnswer"); }
-    public void ProcessCorrectAnswer() { isProcessingResult = true; if (phaseMessageText != null) phaseMessageText.text = "<color=#00FFFF>正解！！</color>"; if (Networking.IsOwner(gameObject)) { citizenWins++; RequestSerialization(); if (citizenWins >= 5) SendCustomEventDelayedSeconds(nameof(GameOverCitizen), 3.0f); else SendCustomEventDelayedSeconds(nameof(StartNextTurn), 3.0f); } }
-    public void ProcessWrongAnswer() { isProcessingResult = true; if (phaseMessageText != null) phaseMessageText.text = "<color=#FF0000>不正解（または時間切れ）</color>"; if (Networking.IsOwner(gameObject)) { werewolfWins++; RequestSerialization(); if (werewolfWins >= 3) SendCustomEventDelayedSeconds(nameof(GameOverWerewolf), 3.0f); else SendCustomEventDelayedSeconds(nameof(StartNextTurn), 3.0f); } }
-    public void GameOverCitizen() { SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "ShowCitizenWin"); }
-    public void GameOverWerewolf() { SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "ShowWerewolfWin"); }
 
-    public void ShowCitizenWin()
+    public void OnAnswerResult(bool isCorrect)
     {
-        if (phaseMessageText != null)
-            phaseMessageText.text = "<color=#00FFFF><size=200%>市民チームの勝利！</size></color>";
-
-        SendCustomEventDelayedSeconds(nameof(EndGameCleanup), 5.0f);
+        if (isProcessingResult) return;
+        if (isCorrect) SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, nameof(ProcessCorrectAnswer));
+        else SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, nameof(ProcessWrongAnswer));
     }
 
-    public void ShowWerewolfWin()
-    {
-        if (phaseMessageText != null)
-            phaseMessageText.text = "<color=#FF0000><size=200%>市民チームの勝利！</size></color>";
+    public void ProcessTimeUp() { if (isProcessingResult) return; SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, nameof(ProcessWrongAnswer)); }
 
-        // すぐに EndGameCleanup を呼ばず、5秒遅らせる
-        SendCustomEventDelayedSeconds(nameof(EndGameCleanup), 5.0f);
+    public void ProcessCorrectAnswer()
+    {
+        isProcessingResult = true; // 同期変数
+        isThinkingPhase = false;   // 同期変数
+
+        // テキストをセット
+        if (phaseMessageText != null) phaseMessageText.text = "<color=#00FFFF><size=150%>正解！！</size></color>";
+
+        if (Networking.IsOwner(gameObject))
+        {
+            citizenWins++;
+            RequestSerialization();
+            if (citizenWins >= 5) SendCustomEventDelayedSeconds(nameof(GameOverCitizen), 3.0f);
+            else SendCustomEventDelayedSeconds(nameof(StartNextTurn), 3.0f);
+        }
+
+        UpdateUI();
     }
 
-
-    public void EndGameCleanup()
+    public void ProcessWrongAnswer()
     {
-        isGameStarted = false;
-        isBuildingPhase = false;
+        isProcessingResult = true;
         isThinkingPhase = false;
-        if (topicUIRoot != null) topicUIRoot.SetActive(false);
-        if (votingUIRoot != null) votingUIRoot.SetActive(false);
-        if (timerText != null) timerText.text = "";
-        if (inventoryManager != null) inventoryManager.SendCustomEvent("ClearAllBlocks");
-        SendCustomEventDelayedSeconds(nameof(ReturnToLobby), 5.0f);
+
+        if (phaseMessageText != null) phaseMessageText.text = "<color=#FF0000><size=150%>不正解...</size></color>";
+
+        if (Networking.IsOwner(gameObject))
+        {
+            werewolfWins++;
+            RequestSerialization();
+            if (werewolfWins >= 3) SendCustomEventDelayedSeconds(nameof(GameOverWerewolf), 3.0f);
+            else SendCustomEventDelayedSeconds(nameof(StartNextTurn), 3.0f);
+        }
+        UpdateUI();
     }
+
+    public void GameOverCitizen() { SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, nameof(ShowCitizenWin)); }
+    public void GameOverWerewolf() { SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, nameof(ShowWerewolfWin)); }
+
+    public void ShowCitizenWin() { if (phaseMessageText != null) phaseMessageText.text = "<color=#00FFFF><size=200%>市民チームの勝利！</size></color>"; SendCustomEventDelayedSeconds(nameof(EndGameCleanup), 5.0f); }
+    public void ShowWerewolfWin() { if (phaseMessageText != null) phaseMessageText.text = "<color=#FF0000><size=200%>人狼チームの勝利！</size></color>"; SendCustomEventDelayedSeconds(nameof(EndGameCleanup), 5.0f); }
 
     public void ReturnToLobby()
     {
         if (phaseMessageText != null) phaseMessageText.text = "";
-
-        if (localPlayer != null)
-        {
-            localPlayer.TeleportTo(new Vector3(0, -6.0f, 0), Quaternion.identity);
-        }
+        if (localPlayer != null) localPlayer.TeleportTo(new Vector3(0, -6.0f, 0), Quaternion.identity);
         UpdateUI();
     }
 
     public void StartNextTurn()
     {
-        if (inventoryManager != null) inventoryManager.SendCustomEvent("ClearAllBlocks");
-        if (topicManager != null) topicManager.DrawNewTopics();
-        currentParentId = currentGuesserId;
-        PickNewGuesser();
-        RequestSerialization();
-        SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, "StartGameSequence");
+        if (Networking.IsOwner(gameObject))
+        {
+            SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, nameof(NetworkClearBlocks));
+            if (topicManager != null) topicManager.DrawNewTopics();
+            currentParentId = currentGuesserId;
+            PickNewGuesser();
+            RequestSerialization();
+            SendCustomEventDelayedSeconds(nameof(StartGameSequence), 1.0f);
+        }
+    }
+
+    public void NetworkClearBlocks() { if (inventoryManager != null) inventoryManager.ClearAllBlocks(); }
+
+    public void EndGameCleanup()
+    {
+        if (Networking.IsOwner(gameObject))
+        {
+            isGameStarted = false;
+            isBuildingPhase = false;
+            isThinkingPhase = false;
+            RequestSerialization();
+            SendCustomNetworkEvent(VRC.Udon.Common.Interfaces.NetworkEventTarget.All, nameof(NetworkClearBlocks));
+        }
+        if (topicUIRoot != null) topicUIRoot.SetActive(false);
+        if (votingUIRoot != null) votingUIRoot.SetActive(false);
+        if (timerText != null) timerText.text = "";
+        SendCustomEventDelayedSeconds(nameof(ReturnToLobby), 5.0f);
     }
 }

@@ -99,7 +99,7 @@ public class PlayerInventoryManager : UdonSharpBehaviour
 
         // UIを少し高く、少し前に出すための設定（数値はお好みで調整してください）
         // x: 左右, y: 上下 (0.2fで少し上へ), z: 前後 (0.5fで50cm前方へ)
-        Vector3 offset = new Vector3(-0.4f, -0.2f, 0.65f);
+        Vector3 offset = new Vector3(-0.4f, -0.32f, 0.65f);
 
         hudRoot.transform.position = headData.position + (headData.rotation * offset);
         hudRoot.transform.rotation = headData.rotation;
@@ -109,16 +109,18 @@ public class PlayerInventoryManager : UdonSharpBehaviour
     {
         if (objectPoolManager == null) return;
         int typeCount = objectPoolManager.objectPrefabs.Length;
+        int[] typeUsageCount = new int[typeCount];
 
         for (int i = 0; i < 5; i++)
         {
-            handheldInventory[i] = Random.Range(0, typeCount);
+            int selectedType = GetRandomTypeWithLimit(typeCount, typeUsageCount);
+            handheldInventory[i] = selectedType;
             slotRotations[i] = Vector3.zero;
             slotScales[i] = 1.0f;
         }
         for (int i = 0; i < 5; i++)
         {
-            reserveInventory[i] = Random.Range(0, typeCount);
+            reserveInventory[i] = GetRandomTypeWithLimit(typeCount, typeUsageCount);
         }
         reserveCount = 5;
 
@@ -126,6 +128,22 @@ public class PlayerInventoryManager : UdonSharpBehaviour
         UpdateGhostModel();
         UpdateSelectionUI();
         UpdateStockUI();
+    }
+
+    private int GetRandomTypeWithLimit(int typeCount, int[] usageArray)
+    {
+        int safety = 0;
+        while (safety < 100)
+        {
+            int rnd = Random.Range(0, typeCount);
+            if (usageArray[rnd] < 3) // シーン上の個数（3）未満ならOK
+            {
+                usageArray[rnd]++;
+                return rnd;
+            }
+            safety++;
+        }
+        return 0; // 万が一の保険
     }
 
     private void TryRefillSlot(int slotIndex)
